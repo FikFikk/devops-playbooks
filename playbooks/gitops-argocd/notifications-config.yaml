@@ -1,0 +1,133 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-notifications-cm
+  namespace: argocd
+data:
+  # Slack service configuration
+  service.slack: |
+    token: $slack-token
+    username: ArgoCD
+    icon: https://argo-cd.readthedocs.io/en/stable/assets/logo.png
+  
+  # Webhook service (untuk Teams, Discord, dll)
+  service.webhook.teams: |
+    url: $teams-webhook-url
+    headers:
+    - name: Content-Type
+      value: application/json
+  
+  # Email service
+  service.email.gmail: |
+    username: $email-username
+    password: $email-password
+    host: smtp.gmail.com
+    port: 587
+    from: $email-username
+  
+  # Template untuk deployment success
+  template.app-deployed: |
+    message: |
+      ✅ Application {{.app.metadata.name}} berhasil di-deploy!
+      
+      📦 Revision: {{.app.status.sync.revision}}
+      🔗 Repo: {{.app.spec.source.repoURL}}
+      🎯 Namespace: {{.app.spec.destination.namespace}}
+      👤 Author: {{(call .repo.GetCommitMetadata .app.status.sync.revision).Author}}
+      💬 Message: {{(call .repo.GetCommitMetadata .app.status.sync.revision).Message}}
+    slack:
+      attachments: |
+        [{
+          "color": "good",
+          "title": "{{.app.metadata.name}}",
+          "title_link": "{{.context.argocdUrl}}/applications/{{.app.metadata.name}}",
+          "fields": [
+            {
+              "title": "Sync Status",
+              "value": "{{.app.status.sync.status}}",
+              "short": true
+            },
+            {
+              "title": "Repository",
+              "value": "{{.app.spec.source.repoURL}}",
+              "short": true
+            }
+          ]
+        }]
+  
+  # Template untuk deployment failure
+  template.app-sync-failed: |
+    message: |
+      ❌ Application {{.app.metadata.name}} gagal sync!
+      
+      📦 Revision: {{.app.status.sync.revision}}
+      🔗 Repo: {{.app.spec.source.repoURL}}
+      ⚠️ Error: {{.app.status.operationState.message}}
+    slack:
+      attachments: |
+        [{
+          "color": "danger",
+          "title": "{{.app.metadata.name}}",
+          "title_link": "{{.context.argocdUrl}}/applications/{{.app.metadata.name}}",
+          "fields": [
+            {
+              "title": "Sync Status",
+              "value": "{{.app.status.sync.status}}",
+              "short": true
+            },
+            {
+              "title": "Operation State",
+              "value": "{{.app.status.operationState.phase}}",
+              "short": true
+            }
+          ]
+        }]
+  
+  # Template untuk health degraded
+  template.app-health-degraded: |
+    message: |
+      ⚠️ Application {{.app.metadata.name}} health degraded!
+      
+      🏥 Health Status: {{.app.status.health.status}}
+      💬 Message: {{.app.status.health.message}}
+  
+  # Triggers
+  trigger.on-deployed: |
+    - when: app.status.operationState.phase in ['Succeeded']
+      oncePer: app.status.sync.revision
+      send: [app-deployed]
+  
+  trigger.on-sync-failed: |
+    - when: app.status.operationState.phase in ['Error', 'Failed']
+      send: [app-sync-failed]
+  
+  trigger.on-health-degraded: |
+    - when: app.status.health.status == 'Degraded'
+      send: [app-health-degraded]
+  
+  # Default subscriptions
+  subscriptions: |
+    - recipients:
+      - slack:devops-notifications
+      triggers:
+      - on-deployed
+      - on-sync-failed
+      - on-health-degraded
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: argocd-notifications-secret
+  namespace: argocd
+type: Opaque
+stringData:
+  # Slack token
+  slack-token: xoxb-your-slack-bot-token
+  
+  # Teams webhook
+  teams-webhook-url: https://outlook.office.com/webhook/your-webhook-url
+  
+  # Email credentials
+  email-username: your-email@gmail.com
+  email-password: your-app-password

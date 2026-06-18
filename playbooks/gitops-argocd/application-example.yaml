@@ -1,0 +1,73 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-app
+  namespace: argocd
+  # Finalizer untuk cleanup resources saat app dihapus
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+spec:
+  # Project name (default atau custom project)
+  project: default
+  
+  # Source repository
+  source:
+    repoURL: https://github.com/your-org/your-gitops-repo.git
+    targetRevision: main
+    path: apps/production
+    
+    # Jika menggunakan Helm
+    # helm:
+    #   valueFiles:
+    #   - values.yaml
+    #   parameters:
+    #   - name: image.tag
+    #     value: v1.0.0
+    
+    # Jika menggunakan Kustomize
+    # kustomize:
+    #   namePrefix: prod-
+    #   nameSuffix: -v1
+    #   images:
+    #   - nginx:1.21
+  
+  # Destination cluster dan namespace
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: production
+  
+  # Sync policy
+  syncPolicy:
+    automated:
+      # Auto-sync saat detect changes di Git
+      prune: true
+      # Auto-sync saat detect drift di cluster
+      selfHeal: true
+      # Jangan sync jika direktori kosong
+      allowEmpty: false
+    
+    syncOptions:
+    # Buat namespace otomatis jika belum ada
+    - CreateNamespace=true
+    # Prune strategy
+    - PrunePropagationPolicy=foreground
+    # Respect ignore differences
+    - RespectIgnoreDifferences=true
+    
+    # Retry policy
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  
+  # Ignore differences untuk field tertentu
+  ignoreDifferences:
+  - group: apps
+    kind: Deployment
+    jsonPointers:
+    - /spec/replicas  # Ignore HPA changes
+  
+  # Revision history limit
+  revisionHistoryLimit: 10

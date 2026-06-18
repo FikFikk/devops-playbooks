@@ -1,0 +1,137 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: demo-app-canary
+  namespace: production
+spec:
+  replicas: 5
+  revisionHistoryLimit: 3
+  
+  selector:
+    matchLabels:
+      app: demo-app-canary
+  
+  template:
+    metadata:
+      labels:
+        app: demo-app-canary
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.21
+        ports:
+        - name: http
+          containerPort: 80
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+  
+  # Canary strategy
+  strategy:
+    canary:
+      # Maximum replicas untuk canary
+      maxSurge: "25%"
+      maxUnavailable: 0
+      
+      # Canary service (untuk testing)
+      canaryService: demo-app-canary
+      
+      # Stable service
+      stableService: demo-app-stable
+      
+      # Traffic routing steps
+      steps:
+      # Step 1: Deploy canary dengan 20% traffic
+      - setWeight: 20
+      - pause:
+          duration: 5m
+      
+      # Step 2: Increase ke 40%
+      - setWeight: 40
+      - pause:
+          duration: 5m
+      
+      # Step 3: Increase ke 60%
+      - setWeight: 60
+      - pause:
+          duration: 5m
+      
+      # Step 4: Increase ke 80%
+      - setWeight: 80
+      - pause:
+          duration: 5m
+      
+      # Step 5: Full rollout (automatic)
+      
+      # Analysis untuk automated decision
+      analysis:
+        templates:
+        - templateName: success-rate
+        startingStep: 2  # Mulai analysis dari step 2
+        args:
+        - name: service-name
+          value: demo-app-canary
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-app-canary
+  namespace: production
+spec:
+  selector:
+    app: demo-app-canary
+  ports:
+  - port: 80
+    targetPort: http
+    name: http
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-app-stable
+  namespace: production
+spec:
+  selector:
+    app: demo-app-canary
+  ports:
+  - port: 80
+    targetPort: http
+    name: http
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: success-rate
+  namespace: production
+spec:
+  args:
+  - name: service-name
+  
+  metrics:
+  - name: success-rate
+    interval: 1m
+    successCondition: result >= 0.95
+    failureLimit: 3
+    provider:
+      prometheus:
+        address: http://prometheus.monitoring:9090
+        query: |
+          sum(rate(
+            http_requests_total{
+              service="{{args.service-name}}",
+              status!~"5.."
+            }[5m]
+          )) 
+          / 
+          sum(rate(
+            http_requests_total{
+              service="{{args.service-name}}"
+            }[5m]
+          ))
