@@ -1,0 +1,32 @@
+# Cron Jobs untuk Cost Optimization Automation
+# Setup di crontab: crontab -e
+
+# 1. Daily Cost Report (setiap hari jam 08:00 WIB)
+0 8 * * * cd /opt/cost-optimization && ./cost-reporter.py --email devops@example.com
+
+# 2. EC2 Scheduler - Stop instances (setiap hari jam 18:00 WIB)
+0 18 * * * cd /opt/cost-optimization && ./ec2-scheduler.sh run
+
+# 3. EC2 Scheduler - Start instances (setiap hari jam 08:00 WIB)
+0 8 * * 1-5 cd /opt/cost-optimization && ./ec2-scheduler.sh run
+
+# 4. Weekly Cost Analysis (setiap Senin jam 09:00 WIB)
+0 9 * * 1 cd /opt/cost-optimization && ./aws-cost-analyzer.sh | mail -s "Weekly AWS Cost Analysis" devops@example.com
+
+# 5. Cloud Custodian - Tag Compliance Check (setiap hari jam 10:00 WIB)
+0 10 * * * cd /opt/cost-optimization && custodian run -s /tmp/custodian-output cloud-custodian-policies.yaml
+
+# 6. Cleanup Old Snapshots (setiap Minggu jam 02:00 WIB)
+0 2 * * 0 aws ec2 describe-snapshots --owner-ids self --query "Snapshots[?StartTime<='$(date -d '90 days ago' --iso-8601)'].SnapshotId" --output text | xargs -n1 aws ec2 delete-snapshot --snapshot-id
+
+# 7. Delete Unattached Volumes (setiap hari jam 03:00 WIB)
+0 3 * * * aws ec2 describe-volumes --filters "Name=status,Values=available" --query "Volumes[?CreateTime<='$(date -d '30 days ago' --iso-8601)'].VolumeId" --output text | xargs -n1 aws ec2 delete-volume --volume-id
+
+# 8. Monthly Cost Summary (tanggal 1 setiap bulan jam 10:00 WIB)
+0 10 1 * * cd /opt/cost-optimization && ./cost-reporter.py --output monthly-report-$(date +\%Y-\%m).txt --email finance@example.com devops@example.com
+
+# 9. Infracost Check for Terraform Changes (setiap push ke main)
+# Integrate dengan CI/CD pipeline, bukan cron
+
+# 10. Budget Alert Check (setiap 6 jam)
+0 */6 * * * aws ce get-cost-forecast --time-period Start=$(date +\%Y-\%m-01),End=$(date -d "1 month" +\%Y-\%m-01) --metric BLENDED_COST --granularity MONTHLY | jq '.Total.Amount'

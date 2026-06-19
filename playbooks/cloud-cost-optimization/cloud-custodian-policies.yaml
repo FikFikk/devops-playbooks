@@ -1,0 +1,240 @@
+# Cloud Custodian Policies untuk Cost Optimization
+# Install: pip install c7n
+# Run: custodian run -s output policies.yaml
+
+policies:
+  # Policy 1: Tag compliance - Terminate untagged instances
+  - name: ec2-require-tags
+    resource: ec2
+    description: |
+      Terminate EC2 instances yang tidak memiliki required tags setelah 7 hari.
+      Warning email akan dikirim di hari ke-1 dan ke-5.
+    filters:
+      - "tag:Environment": absent
+      - "tag:Owner": absent
+      - "tag:Project": absent
+    actions:
+      - type: mark-for-op
+        op: terminate
+        days: 7
+      - type: notify
+        template: default.html
+        priority_header: 1
+        subject: "[Cloud Custodian] EC2 Instance Missing Required Tags"
+        violation_desc: "EC2 instances must have Environment, Owner, and Project tags"
+        action_desc: "Instance will be terminated in 7 days if not tagged"
+        to:
+          - resource-owner
+          - devops@example.com
+
+  # Policy 2: Stop idle EC2 instances
+  - name: ec2-idle-stop
+    resource: ec2
+    description: Stop EC2 instances dengan CPU < 5% selama 7 hari
+    filters:
+      - type: instance-age
+        days: 7
+      - type: metrics
+        name: CPUUtilization
+        days: 7
+        period: 86400
+        value: 5
+        op: less-than
+      - "tag:Environment": development
+    actions:
+      - stop
+      - type: notify
+        template: default.html
+        subject: "[Cloud Custodian] Idle EC2 Instance Stopped"
+        to:
+          - resource-owner
+          - devops@example.com
+
+  # Policy 3: Delete unattached EBS volumes
+  - name: ebs-unattached-delete
+    resource: ebs
+    description: Delete EBS volumes yang tidak attached > 30 hari
+    filters:
+      - Attachments: []
+      - type: value
+        key: CreateTime
+        op: greater-than
+        value_type: age
+        value: 30
+    actions:
+      - type: delete
+        skip-snapshot: false
+      - type: notify
+        template: default.html
+        subject: "[Cloud Custodian] Unattached EBS Volume Deleted"
+        to:
+          - devops@example.com
+
+  # Policy 4: Delete old snapshots
+  - name: ebs-snapshot-cleanup
+    resource: ebs-snapshot
+    description: Delete snapshots > 90 hari kecuali yang di-tag retention
+    filters:
+      - type: age
+        days: 90
+        op: greater-than
+      - "tag:Retention": absent
+    actions:
+      - delete
+      - type: notify
+        template: default.html
+        subject: "[Cloud Custodian] Old EBS Snapshots Deleted"
+        to:
+          - devops@example.com
+
+  # Policy 5: Release unused Elastic IPs
+  - name: elastic-ip-unused
+    resource: network-addr
+    description: Release Elastic IPs yang tidak digunakan > 7 hari
+    filters:
+      - type: value
+        key: AssociationId
+        value: absent
+    actions:
+      - release
+      - type: notify
+        template: default.html
+        subject: "[Cloud Custodian] Unused Elastic IP Released"
+        to:
+          - devops@example.com
+
+  # Policy 6: Offboard old AMIs
+  - name: ami-cleanup
+    resource: ami
+    description: Deregister AMIs > 180 hari kecuali yang tagged
+    filters:
+      - type: image-age
+        days: 180
+      - "tag:Keep": absent
+    actions:
+      - deregister
+      - type: notify
+        template: default.html
+        subject: "[Cloud Custodian] Old AMIs Deregistered"
+        to:
+          - devops@example.com
+
+  # Policy 7: S3 bucket encryption enforcement
+  - name: s3-enable-encryption
+    resource: s3
+    description: Enable default encryption untuk S3 buckets
+    filters:
+      - type: bucket-encryption
+        state: false
+    actions:
+      - type: set-bucket-encryption
+        enabled: true
+        crypto: AES256
+      - type: notify
+        template: default.html
+        subject: "[Cloud Custodian] S3 Bucket Encryption Enabled"
+        to:
+          - devops@example.com
+
+  # Policy 8: RDS idle instances
+  - name: rds-idle-stop
+    resource: rds
+    description: Stop RDS instances dengan connection < 10/day untuk development
+    filters:
+      - "tag:Environment": development
+      - type: metrics
+        name: DatabaseConnections
+        days: 7
+        period: 86400
+        value: 10
+        op: less-than
+    actions:
+      - stop
+      - type: notify
+        template: default.html
+        subject: "[Cloud Custodian] Idle RDS Instance Stopped"
+        to:
+          - resource-owner
+          - devops@example.com
+
+  # Policy 9: Auto-tag new resources
+  - name: ec2-auto-tag
+    resource: ec2
+    description: Auto-tag EC2 instances dengan creator info
+    mode:
+      type: cloudtrail
+      events:
+        - RunInstances
+    filters:
+      - "tag:CreatedBy": absent
+    actions:
+      - type: auto-tag-user
+        tag: CreatedBy
+      - type: tag
+        key: CreatedDate
+        value: "now"
+
+  # Policy 10: Lambda cost optimization - delete old versions
+  - name: lambda-old-versions
+    resource: lambda
+    description: Delete Lambda function versions > 30 hari (keep $LATEST)
+    filters:
+      - type: value
+        key: Version
+        value: "$LATEST"
+        op: ne
+      - type: age
+        days: 30
+        op: greater-than
+    actions:
+      - type: delete
+        
+  # Policy 11: Rightsize over-provisioned EC2
+  - name: ec2-rightsize-recommendation
+    resource: ec2
+    description: Recommend downsizing untuk instances dengan low utilization
+    filters:
+      - type: metrics
+        name: CPUUtilization
+        days: 14
+        period: 86400
+        value: 20
+        op: less-than
+      - "tag:Environment": 
+          - development
+          - staging
+    actions:
+      - type: notify
+        template: default.html
+        subject: "[Cloud Custodian] EC2 Rightsizing Recommendation"
+        violation_desc: "Instance has consistently low CPU utilization (<20%)"
+        action_desc: "Consider downsizing to a smaller instance type"
+        to:
+          - resource-owner
+          - devops@example.com
+
+  # Policy 12: Schedule non-production EC2 stop
+  - name: ec2-offhours-stop
+    resource: ec2
+    description: Stop development instances di luar jam kerja (18:00 WIB)
+    filters:
+      - "tag:Environment": development
+      - "tag:AutoShutdown": enabled
+      - type: offhour
+        offhour: 18
+        default_tz: Asia/Jakarta
+    actions:
+      - stop
+
+  # Policy 13: Schedule non-production EC2 start
+  - name: ec2-onhours-start
+    resource: ec2
+    description: Start development instances di jam kerja (08:00 WIB)
+    filters:
+      - "tag:Environment": development
+      - "tag:AutoShutdown": enabled
+      - type: onhour
+        onhour: 8
+        default_tz: Asia/Jakarta
+    actions:
+      - start

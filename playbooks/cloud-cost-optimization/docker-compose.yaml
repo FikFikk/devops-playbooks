@@ -1,0 +1,77 @@
+version: '3.8'
+
+services:
+  # Infracost API (Self-hosted)
+  infracost-api:
+    image: infracost/infracost:latest
+    container_name: infracost-api
+    environment:
+      - INFRACOST_API_KEY=${INFRACOST_API_KEY}
+      - INFRACOST_CURRENCY=USD
+    volumes:
+      - ./terraform:/terraform:ro
+    command: breakdown --path /terraform
+    restart: unless-stopped
+
+  # Grafana untuk Cost Dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: cost-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_INSTALL_PLUGINS=grafana-cloudwatch-datasource
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    restart: unless-stopped
+
+  # Prometheus untuk metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: cost-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    restart: unless-stopped
+
+  # CloudWatch Exporter
+  cloudwatch-exporter:
+    image: prom/cloudwatch-exporter:latest
+    container_name: cloudwatch-exporter
+    ports:
+      - "9106:9106"
+    volumes:
+      - ./cloudwatch-exporter/config.yml:/config/config.yml
+    environment:
+      - AWS_REGION=${AWS_REGION:-ap-southeast-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+    command:
+      - '/config/config.yml'
+    restart: unless-stopped
+
+  # Komiser - Cloud Environment Inspector
+  komiser:
+    image: mlabouardy/komiser:latest
+    container_name: komiser
+    ports:
+      - "3001:3000"
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_REGION:-ap-southeast-1}
+    volumes:
+      - komiser-data:/root/.komiser
+    restart: unless-stopped
+
+volumes:
+  grafana-data:
+  prometheus-data:
+  komiser-data:
