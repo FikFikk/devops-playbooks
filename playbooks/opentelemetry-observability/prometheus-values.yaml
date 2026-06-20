@@ -1,0 +1,137 @@
+# Prometheus Stack (includes Grafana)
+prometheus:
+  prometheusSpec:
+    retention: 15d
+    retentionSize: "50GB"
+    
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 1000m
+        memory: 2Gi
+    
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 50Gi
+    
+    # Enable remote write to support Tempo metrics generator
+    remoteWrite:
+      - url: http://tempo:3200/api/v1/push
+    
+    # Additional scrape configs
+    additionalScrapeConfigs:
+      - job_name: 'otel-collector'
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - observability
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: otel-collector
+          - source_labels: [__meta_kubernetes_pod_name]
+            action: replace
+            target_label: pod
+          - source_labels: [__meta_kubernetes_namespace]
+            action: replace
+            target_label: namespace
+
+grafana:
+  enabled: true
+  
+  adminPassword: "admin123"
+  
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+  
+  persistence:
+    enabled: true
+    size: 10Gi
+  
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    hosts:
+      - grafana.your-domain.com
+    # tls:
+    #   - secretName: grafana-tls
+    #     hosts:
+    #       - grafana.your-domain.com
+  
+  # Provision datasources
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          url: http://prometheus-operated:9090
+          isDefault: true
+          editable: true
+          jsonData:
+            httpMethod: POST
+        
+        - name: Tempo
+          type: tempo
+          url: http://tempo:3200
+          uid: tempo
+          editable: true
+          jsonData:
+            httpMethod: GET
+            serviceMap:
+              datasourceUid: prometheus
+        
+        - name: Loki
+          type: loki
+          url: http://loki:3100
+          uid: loki
+          editable: true
+
+alertmanager:
+  enabled: true
+  
+  config:
+    global:
+      resolve_timeout: 5m
+    
+    route:
+      group_by: ['alertname', 'cluster', 'service']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 12h
+      receiver: 'null'
+      routes:
+        - match:
+            alertname: Watchdog
+          receiver: 'null'
+    
+    receivers:
+      - name: 'null'
+      # - name: 'slack'
+      #   slack_configs:
+      #     - api_url: 'YOUR_SLACK_WEBHOOK_URL'
+      #       channel: '#alerts'
+      #       title: "{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}"
+      #       text: "{{ range .Alerts }}{{ .Annotations.description }}{{ end }}"
+
+# Disable components yang tidak perlu
+kubeStateMetrics:
+  enabled: true
+
+nodeExporter:
+  enabled: true
+
+prometheusOperator:
+  enabled: true
