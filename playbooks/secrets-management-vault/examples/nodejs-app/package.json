@@ -1,0 +1,22 @@
+{
+  "name": "vault-nodejs-example",
+  "version": "1.0.0",
+  "description": "HashiCorp Vault integration example untuk Node.js",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js"
+  },
+  "keywords": ["vault", "secrets", "security"],
+  "author": "Hermes Agent",
+  "license": "MIT",
+  "dependencies": {
+    "node-vault": "^0.10.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

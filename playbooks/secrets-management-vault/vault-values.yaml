@@ -1,0 +1,227 @@
+# Vault Helm Chart Values untuk Production
+# Dokumentasi: https://github.com/hashicorp/vault-helm
+
+global:
+  enabled: true
+  tlsDisable: false
+
+injector:
+  enabled: true
+  replicas: 2
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 250m
+    limits:
+      memory: 512Mi
+      cpu: 500m
+
+server:
+  enabled: true
+  
+  # Production: gunakan enterprise image jika ada license
+  image:
+    repository: "hashicorp/vault"
+    tag: "1.17.0"
+    pullPolicy: IfNotPresent
+
+  # High Availability dengan Raft storage
+  ha:
+    enabled: true
+    replicas: 3
+    raft:
+      enabled: true
+      setNodeId: true
+      
+      config: |
+        ui = true
+        
+        listener "tcp" {
+          tls_disable = 0
+          address = "[::]:8200"
+          cluster_address = "[::]:8201"
+          tls_cert_file = "/vault/userconfig/vault-tls/tls.crt"
+          tls_key_file = "/vault/userconfig/vault-tls/tls.key"
+          tls_client_ca_file = "/vault/userconfig/vault-tls/ca.crt"
+        }
+
+        storage "raft" {
+          path = "/vault/data"
+          
+          retry_join {
+            leader_api_addr = "https://vault-0.vault-internal:8200"
+            leader_ca_cert_file = "/vault/userconfig/vault-tls/ca.crt"
+          }
+          
+          retry_join {
+            leader_api_addr = "https://vault-1.vault-internal:8200"
+            leader_ca_cert_file = "/vault/userconfig/vault-tls/ca.crt"
+          }
+          
+          retry_join {
+            leader_api_addr = "https://vault-2.vault-internal:8200"
+            leader_ca_cert_file = "/vault/userconfig/vault-tls/ca.crt"
+          }
+        }
+
+        service_registration "kubernetes" {}
+
+        # Auto-unseal dengan AWS KMS (uncomment & configure)
+        # seal "awskms" {
+        #   region     = "us-east-1"
+        #   kms_key_id = "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012"
+        # }
+
+        # Auto-unseal dengan GCP KMS
+        # seal "gcpckms" {
+        #   project    = "my-project"
+        #   region     = "us-central1"
+        #   key_ring   = "vault-keyring"
+        #   crypto_key = "vault-key"
+        # }
+
+  # Resources
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 500m
+    limits:
+      memory: 2Gi
+      cpu: 1000m
+
+  # Persistent storage untuk Raft
+  dataStorage:
+    enabled: true
+    size: 10Gi
+    storageClass: null  # gunakan default storage class
+    accessMode: ReadWriteOnce
+
+  # Audit storage
+  auditStorage:
+    enabled: true
+    size: 10Gi
+    storageClass: null
+    accessMode: ReadWriteOnce
+
+  # Service configuration
+  service:
+    enabled: true
+    type: ClusterIP
+    port: 8200
+    targetPort: 8200
+    annotations: {}
+
+  # Ingress (uncomment jika butuh external access)
+  # ingress:
+  #   enabled: true
+  #   ingressClassName: nginx
+  #   annotations:
+  #     cert-manager.io/cluster-issuer: letsencrypt-prod
+  #   hosts:
+  #     - host: vault.example.com
+  #       paths:
+  #         - /
+  #   tls:
+  #     - secretName: vault-tls
+  #       hosts:
+  #         - vault.example.com
+
+  # Standalone server (jika tidak pakai HA)
+  standalone:
+    enabled: false
+
+  # Liveness & readiness probes
+  livenessProbe:
+    enabled: true
+    path: "/v1/sys/health?standbyok=true"
+    initialDelaySeconds: 60
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 2
+    successThreshold: 1
+
+  readinessProbe:
+    enabled: true
+    path: "/v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204"
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 2
+    successThreshold: 1
+
+  # Affinity untuk distribute pods across nodes
+  affinity: |
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ template "vault.name" . }}
+              app.kubernetes.io/instance: "{{ .Release.Name }}"
+              component: server
+          topologyKey: kubernetes.io/hostname
+
+  # Tolerations jika ada tainted nodes
+  tolerations: []
+
+  # Node selector
+  nodeSelector: {}
+
+  # Security context
+  securityContext:
+    pod:
+      runAsNonRoot: true
+      runAsGroup: 1000
+      runAsUser: 100
+      fsGroup: 1000
+    container:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+
+  # Extra environment variables
+  extraEnvironmentVars:
+    VAULT_LOG_LEVEL: info
+    # Uncomment untuk AWS auto-unseal
+    # AWS_REGION: us-east-1
+
+  # Extra secret environment variables (untuk cloud credentials)
+  # extraSecretEnvironmentVars:
+  #   - envName: AWS_ACCESS_KEY_ID
+  #     secretName: vault-kms-creds
+  #     secretKey: access_key
+  #   - envName: AWS_SECRET_ACCESS_KEY
+  #     secretName: vault-kms-creds
+  #     secretKey: secret_key
+
+  # Volume untuk TLS certificates
+  volumes:
+    - name: vault-tls
+      secret:
+        secretName: vault-tls
+
+  volumeMounts:
+    - name: vault-tls
+      mountPath: /vault/userconfig/vault-tls
+      readOnly: true
+
+# UI configuration
+ui:
+  enabled: true
+  serviceType: "ClusterIP"
+  externalPort: 8200
+
+# CSI Provider untuk secret injection via volumes
+csi:
+  enabled: false  # enable jika pakai Vault CSI Provider
+
+# Server telemetry
+serverTelemetry:
+  serviceMonitor:
+    enabled: false  # enable jika pakai Prometheus Operator
+    interval: 30s
+    scrapeTimeout: 10s
+
+  prometheusRules:
+    enabled: false
+    rules: []

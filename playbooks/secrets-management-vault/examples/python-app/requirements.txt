@@ -1,0 +1,9 @@
+# Vault client library
+hvac==2.1.0
+
+# HTTP library (dependency dari hvac)
+requests==2.31.0
+
+# Optional: untuk production apps
+# python-dotenv==1.0.0  # Load .env files untuk local dev
+# pydantic==2.5.0       # Validation & settings management
