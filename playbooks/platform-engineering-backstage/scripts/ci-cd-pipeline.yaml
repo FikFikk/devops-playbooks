@@ -1,0 +1,297 @@
+# GitHub Actions CI/CD Pipeline untuk Backstage
+# Letakkan di: .github/workflows/ci-backstage.yml
+
+name: CI/CD - Backstage Portal
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/backstage
+  NODE_VERSION: '20'
+
+jobs:
+  # ─── Job 1: Test & Lint ────────────────────────────────────────────────────
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: Checkout kode
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'yarn'
+      
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+      
+      - name: Lint kode
+        run: yarn lint:all
+      
+      - name: Type check
+        run: yarn tsc
+      
+      - name: Unit tests
+        run: yarn test:all --coverage
+      
+      - name: Upload coverage ke Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  # ─── Job 2: Build Docker Image ─────────────────────────────────────────────
+  build:
+    name: Build Docker Image
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    
+    permissions:
+      contents: read
+      packages: write
+    
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+    
+    steps:
+      - name: Checkout kode
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'yarn'
+      
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+      
+      - name: Build Backstage
+        run: yarn build:all
+      
+      - name: Login ke GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable={{is_default_branch}}
+      
+      - name: Build dan Push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: packages/backend/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+          provenance: true
+          sbom: true
+      
+      - name: Generate SBOM (Software Bill of Materials)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          artifact-name: sbom.spdx.json
+      
+      - name: Scan image untuk vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '1'    # Gagal jika ada vulnerability HIGH/CRITICAL
+      
+      - name: Upload Trivy SARIF ke GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # ─── Job 3: Deploy ke Staging ──────────────────────────────────────────────
+  deploy-staging:
+    name: Deploy ke Staging
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: staging
+      url: https://backstage-staging.mycompany.com
+    
+    # Jalankan otomatis di push ke main, atau manual trigger
+    if: |
+      (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging')
+    
+    steps:
+      - name: Checkout kode
+        uses: actions/checkout@v4
+      
+      - name: Configure kubectl (Staging)
+        uses: azure/k8s-set-context@v4
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBE_CONFIG_STAGING }}
+      
+      - name: Deploy ke Staging
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.image-digest }}"
+          
+          kubectl set image deployment/backstage \
+            backstage="${IMAGE}" \
+            --namespace=backstage-staging
+          
+          kubectl rollout status deployment/backstage \
+            --namespace=backstage-staging \
+            --timeout=5m
+      
+      - name: Smoke test staging
+        run: |
+          sleep 30
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://backstage-staging.mycompany.com/healthcheck")
+          
+          if [ "$STATUS" != "200" ]; then
+            echo "❌ Health check gagal: HTTP ${STATUS}"
+            exit 1
+          fi
+          echo "✅ Staging health check OK"
+      
+      - name: Notifikasi Slack — Staging Deploy
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_DEPLOYMENTS }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "✅ *Backstage* berhasil di-deploy ke *staging*",
+              "attachments": [{
+                "color": "#36a64f",
+                "fields": [
+                  {"title": "Image", "value": "${{ needs.build.outputs.image-tag }}", "short": false},
+                  {"title": "Commit", "value": "${{ github.sha }}", "short": true},
+                  {"title": "Author", "value": "${{ github.actor }}", "short": true}
+                ]
+              }]
+            }
+
+  # ─── Job 4: Deploy ke Production (manual approval) ─────────────────────────
+  deploy-production:
+    name: Deploy ke Production
+    needs: [build, deploy-staging]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production          # GitHub Environment dengan required reviewers
+      url: https://backstage.mycompany.com
+    
+    if: |
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production')
+    
+    steps:
+      - name: Checkout kode
+        uses: actions/checkout@v4
+      
+      - name: Configure kubectl (Production)
+        uses: azure/k8s-set-context@v4
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBE_CONFIG_PRODUCTION }}
+      
+      - name: Deploy ke Production (Rolling Update)
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.image-digest }}"
+          
+          # Update image
+          kubectl set image deployment/backstage \
+            backstage="${IMAGE}" \
+            --namespace=backstage
+          
+          # Tunggu rolling update selesai
+          kubectl rollout status deployment/backstage \
+            --namespace=backstage \
+            --timeout=10m
+      
+      - name: Production smoke test
+        run: |
+          sleep 60   # Tunggu service warm up
+          
+          # Cek API health
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://backstage.mycompany.com/healthcheck")
+          
+          if [ "$STATUS" != "200" ]; then
+            echo "❌ Production health check gagal! Melakukan rollback..."
+            kubectl rollout undo deployment/backstage --namespace=backstage
+            exit 1
+          fi
+          
+          echo "✅ Production health check OK"
+      
+      - name: Rollback jika gagal
+        if: failure()
+        run: |
+          kubectl rollout undo deployment/backstage --namespace=backstage
+          echo "⚠️ Rollback ke versi sebelumnya berhasil"
+      
+      - name: Notifikasi Slack — Production Deploy
+        if: always()
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_DEPLOYMENTS }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "${{ job.status == 'success' && '✅' || '❌' }} *Backstage* production deploy: *${{ job.status }}*",
+              "attachments": [{
+                "color": "${{ job.status == 'success' && '#36a64f' || '#ff0000' }}",
+                "fields": [
+                  {"title": "Environment", "value": "Production", "short": true},
+                  {"title": "Author", "value": "${{ github.actor }}", "short": true},
+                  {"title": "URL", "value": "https://backstage.mycompany.com", "short": false}
+                ]
+              }]
+            }

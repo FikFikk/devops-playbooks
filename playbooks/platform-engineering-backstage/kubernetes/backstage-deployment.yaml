@@ -1,0 +1,469 @@
+---
+# Kubernetes manifests untuk deployment Backstage di production cluster
+# Namespace: backstage
+# Konfigurasi: Production-ready dengan TLS, resource limits, dan HA
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: backstage
+  labels:
+    app.kubernetes.io/name: backstage
+    environment: production
+
+---
+##############################################################################
+# ConfigMap — Konfigurasi Backstage (non-sensitive)
+##############################################################################
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backstage-config
+  namespace: backstage
+data:
+  app-config.production.yaml: |
+    app:
+      title: "MyCompany Developer Portal"
+      baseUrl: https://backstage.mycompany.com
+
+    backend:
+      baseUrl: https://backstage.mycompany.com
+      listen:
+        port: 7007
+        host: 0.0.0.0
+      database:
+        client: pg
+        connection:
+          host: ${POSTGRES_HOST}
+          port: ${POSTGRES_PORT}
+          user: ${POSTGRES_USER}
+          password: ${POSTGRES_PASSWORD}
+          database: backstage_production
+          ssl:
+            require: true
+            rejectUnauthorized: true
+      cache:
+        store: redis
+        connection:
+          host: ${REDIS_HOST}
+          port: 6379
+          password: ${REDIS_PASSWORD}
+          tls: true
+      reading:
+        allow:
+          - host: github.com
+          - host: raw.githubusercontent.com
+
+    catalog:
+      processingInterval:
+        seconds: 60
+      rules:
+        - allow: [Component, System, API, Resource, Location, Domain, Group, User, Template]
+      locations:
+        - type: url
+          target: https://github.com/mycompany/backstage/blob/main/catalog/all-components.yaml
+        - type: github-org
+          target: https://github.com/mycompany
+          rules:
+            - allow: [Group, User]
+        - type: github-discovery
+          target: https://github.com/mycompany
+          rules:
+            - allow: [Component, API, Template]
+
+    auth:
+      environment: production
+      session:
+        secret: ${AUTH_SESSION_SECRET}
+      providers:
+        github:
+          production:
+            clientId: ${GITHUB_CLIENT_ID}
+            clientSecret: ${GITHUB_CLIENT_SECRET}
+            signIn:
+              resolvers:
+                - resolver: emailMatchingUserEntityProfileEmail
+                - resolver: emailLocalPartMatchingUserEntityName
+
+    techdocs:
+      builder: 'external'  # TechDocs di-build oleh CI/CD, bukan Backstage
+      generator:
+        runIn: 'local'
+      publisher:
+        type: 's3'          # Simpan di S3 untuk production
+        awsS3:
+          bucketName: mycompany-techdocs
+          region: ap-southeast-1
+          accountId: ${AWS_ACCOUNT_ID}
+
+    kubernetes:
+      serviceLocatorMethod:
+        type: 'multiTenant'
+      clusterLocatorMethods:
+        - type: 'config'
+          clusters:
+            - url: ${K8S_PROD_URL}
+              name: production
+              authProvider: 'serviceAccount'
+              serviceAccountToken: ${K8S_PROD_TOKEN}
+              caData: ${K8S_PROD_CA}
+            - url: ${K8S_STAGING_URL}
+              name: staging
+              authProvider: 'serviceAccount'
+              serviceAccountToken: ${K8S_STAGING_TOKEN}
+              caData: ${K8S_STAGING_CA}
+
+    permission:
+      enabled: true
+
+    # Monitoring
+    backend:
+      metrics:
+        prometheus:
+          enabled: true
+
+---
+##############################################################################
+# Secret — Credentials sensitif (di production gunakan External Secrets Operator)
+##############################################################################
+# CATATAN: Dalam production, gunakan External Secrets Operator yang membaca dari
+# AWS Secrets Manager / Vault, bukan hardcode di file ini.
+# Contoh di bawah hanya untuk referensi struktur.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backstage-secrets
+  namespace: backstage
+  annotations:
+    # Jika menggunakan External Secrets Operator:
+    # kubernetes.io/ignore-if-already-exists: "false"
+type: Opaque
+stringData:
+  POSTGRES_HOST: "backstage-postgres.mycompany.internal"
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: "backstage_prod"
+  POSTGRES_PASSWORD: "CHANGE_ME_USE_VAULT"
+  REDIS_HOST: "backstage-redis.mycompany.internal"
+  REDIS_PASSWORD: "CHANGE_ME_USE_VAULT"
+  GITHUB_CLIENT_ID: "CHANGE_ME"
+  GITHUB_CLIENT_SECRET: "CHANGE_ME"
+  AUTH_SESSION_SECRET: "CHANGE_ME_RANDOM_32_CHARS"
+  K8S_PROD_TOKEN: "CHANGE_ME"
+  K8S_PROD_URL: "https://k8s.mycompany.com"
+  K8S_PROD_CA: "CHANGE_ME_BASE64"
+  K8S_STAGING_TOKEN: "CHANGE_ME"
+  K8S_STAGING_URL: "https://k8s-staging.mycompany.com"
+  K8S_STAGING_CA: "CHANGE_ME_BASE64"
+  AWS_ACCOUNT_ID: "123456789012"
+
+---
+##############################################################################
+# ServiceAccount — Untuk akses Backstage ke Kubernetes API
+##############################################################################
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backstage
+  namespace: backstage
+  annotations:
+    # Jika menggunakan IRSA (IAM Role for Service Account) di EKS:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/backstage-role
+
+---
+# ClusterRole — Akses read-only ke semua namespace untuk Kubernetes plugin
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: backstage-k8s-viewer
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - services
+      - endpoints
+      - namespaces
+      - resourcequotas
+      - limitranges
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - replicasets
+      - statefulsets
+      - daemonsets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources:
+      - horizontalpodautoscalers
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - ingresses
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["argoproj.io"]
+    resources:
+      - rollouts
+      - rollouts/status
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources:
+      - pods
+      - nodes
+    verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: backstage-k8s-viewer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: backstage-k8s-viewer
+subjects:
+  - kind: ServiceAccount
+    name: backstage
+    namespace: backstage
+
+---
+##############################################################################
+# Deployment — Backstage Application
+##############################################################################
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backstage
+  namespace: backstage
+  labels:
+    app: backstage
+    app.kubernetes.io/name: backstage
+    app.kubernetes.io/version: "1.0.0"
+    # Label untuk Backstage catalog (self-reference)
+    backstage.io/kubernetes-id: backstage
+spec:
+  replicas: 2                    # Minimal 2 untuk HA
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: backstage
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0          # Zero-downtime deployment
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: backstage
+        backstage.io/kubernetes-id: backstage
+      annotations:
+        # Force rolling restart jika ConfigMap berubah
+        checksum/config: "{{ .Values.configChecksum }}"
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "7007"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: backstage
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      
+      # Anti-affinity: spread replicas ke node berbeda
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - backstage
+                topologyKey: kubernetes.io/hostname
+      
+      containers:
+        - name: backstage
+          image: registry.mycompany.com/platform/backstage:1.0.0
+          imagePullPolicy: IfNotPresent
+          
+          ports:
+            - name: http
+              containerPort: 7007
+              protocol: TCP
+          
+          envFrom:
+            - secretRef:
+                name: backstage-secrets
+          
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: LOG_LEVEL
+              value: info
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=1536"
+          
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/app-config.production.yaml
+              subPath: app-config.production.yaml
+              readOnly: true
+          
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          
+          startupProbe:
+            httpGet:
+              path: /healthcheck
+              port: 7007
+            failureThreshold: 30
+            periodSeconds: 10
+          
+          livenessProbe:
+            httpGet:
+              path: /healthcheck
+              port: 7007
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          
+          readinessProbe:
+            httpGet:
+              path: /healthcheck
+              port: 7007
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      
+      volumes:
+        - name: app-config
+          configMap:
+            name: backstage-config
+      
+      imagePullSecrets:
+        - name: registry-credentials
+      
+      terminationGracePeriodSeconds: 30
+
+---
+##############################################################################
+# Service
+##############################################################################
+apiVersion: v1
+kind: Service
+metadata:
+  name: backstage
+  namespace: backstage
+  labels:
+    app: backstage
+spec:
+  selector:
+    app: backstage
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: 7007
+      protocol: TCP
+
+---
+##############################################################################
+# Ingress dengan TLS (menggunakan cert-manager)
+##############################################################################
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: backstage
+  namespace: backstage
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-production
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    # Security headers
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: DENY";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "X-XSS-Protection: 1; mode=block";
+      more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
+spec:
+  tls:
+    - hosts:
+        - backstage.mycompany.com
+      secretName: backstage-tls
+  rules:
+    - host: backstage.mycompany.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: backstage
+                port:
+                  number: 80
+
+---
+##############################################################################
+# HorizontalPodAutoscaler
+##############################################################################
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backstage
+  namespace: backstage
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backstage
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+---
+##############################################################################
+# PodDisruptionBudget — Jamin minimal 1 replica selalu available
+##############################################################################
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: backstage
+  namespace: backstage
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: backstage

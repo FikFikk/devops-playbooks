@@ -1,0 +1,107 @@
+# Contoh catalog-info.yaml untuk microservice
+# Letakkan file ini di root direktori repository masing-masing service
+# Backstage akan otomatis menemukan file ini melalui GitHub discovery
+
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  # ─── WAJIB DIISI ──────────────────────────────────────────────────────────────
+  name: nama-service-anda          # Ganti dengan nama service (kebab-case)
+  title: "Nama Human-Readable"     # Nama yang ditampilkan di UI
+  description: >
+    Deskripsi singkat tentang apa yang dilakukan service ini,
+    masalah bisnis yang diselesaikan, dan siapa penggunanya.
+  
+  # ─── ANOTASI (isi sesuai tools yang digunakan) ──────────────────────────────
+  annotations:
+    # --- Source Control ---
+    github.com/project-slug: mycompany/nama-service-anda
+    
+    # --- Kubernetes ---
+    # WAJIB jika menggunakan Kubernetes plugin di Backstage
+    # Harus sama dengan label 'backstage.io/kubernetes-id' di Deployment
+    backstage.io/kubernetes-id: nama-service-anda
+    backstage.io/kubernetes-namespace: production  # atau staging, dll
+    
+    # --- CI/CD ---
+    # Pilih salah satu sesuai CI/CD yang digunakan:
+    github.com/action-workflow: ci.yml                    # GitHub Actions
+    # jenkins.io/job-full-name: nama-service/main         # Jenkins
+    # gitlab.com/project-path: mycompany/nama-service     # GitLab CI
+    
+    # --- Monitoring ---
+    grafana/dashboard-selector: "title=Nama Service"      # Label selector Grafana
+    grafana/alert-label-selector: "service=nama-service"
+    
+    # --- On-call ---
+    pagerduty.com/service-id: P_SERVICE_ID_DISINI         # PagerDuty service ID
+    
+    # --- Code Quality ---
+    sonarqube.org/project-key: mycompany_nama-service
+    
+    # --- TechDocs ---
+    # 'dir:.' artinya docs/ folder ada di root repo ini
+    backstage.io/techdocs-ref: dir:.
+    
+    # --- Runbook ---
+    backstage.io/runbook: "https://wiki.mycompany.com/runbook/nama-service"
+    
+  # ─── TAGS ─────────────────────────────────────────────────────────────────
+  tags:
+    - java           # Bahasa utama
+    - spring-boot    # Framework
+    - payment        # Domain bisnis
+    - critical       # Tingkat kekritisan: critical | standard | low
+  
+  # ─── LINKS ─────────────────────────────────────────────────────────────────
+  links:
+    - url: https://grafana.mycompany.com/d/xxx
+      title: Grafana Dashboard
+      icon: dashboard
+    - url: https://argocd.mycompany.com/applications/nama-service
+      title: ArgoCD (Deployment Status)
+      icon: web
+    - url: https://sonarcloud.io/project/overview?id=mycompany_nama-service
+      title: SonarQube Code Quality
+      icon: techdocs
+
+spec:
+  # ─── TIPE SERVICE ──────────────────────────────────────────────────────────
+  # service   → REST API / gRPC service
+  # library   → Shared library / package
+  # website   → Frontend application
+  # documentation → Dokumentasi-only
+  type: service
+  
+  # ─── LIFECYCLE ─────────────────────────────────────────────────────────────
+  # experimental → Masih early development, bisa berubah drastis
+  # development  → Development aktif, belum production
+  # production   → Live dan digunakan user
+  # deprecated   → Akan dihapus, jangan gunakan untuk project baru
+  lifecycle: production
+  
+  # ─── OWNER ─────────────────────────────────────────────────────────────────
+  # Format: group:nama-team ATAU user:nama-user
+  # Tim yang bertanggung jawab dan menerima alert/notifikasi untuk service ini
+  owner: group:nama-tim-anda
+  
+  # ─── SYSTEM (Domain Bisnis) ─────────────────────────────────────────────────
+  system: ecommerce-platform   # atau platform, data-platform, dll
+  
+  # ─── DEPENDENSI ─────────────────────────────────────────────────────────────
+  dependsOn:
+    # Resource (database, queue, storage)
+    - resource:nama-database-postgres
+    - resource:nama-kafka-topic
+    # Service lain yang kita panggil
+    - component:nama-service-lain
+  
+  # ─── API ───────────────────────────────────────────────────────────────────
+  # API yang disediakan oleh service ini
+  providesApis:
+    - nama-service-anda-api-v1
+  
+  # API dari service lain yang digunakan (consumed)
+  consumesApis:
+    - payment-api-v2
+    - inventory-api-v1

@@ -1,0 +1,246 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: microservice-spring-boot
+  title: "Spring Boot Microservice"
+  description: >
+    Template untuk membuat microservice Spring Boot baru yang sudah dikonfigurasi
+    dengan standar perusahaan: CI/CD GitHub Actions, Dockerfile, Helm chart,
+    catalog-info.yaml, dan TechDocs.
+  tags:
+    - java
+    - spring-boot
+    - microservice
+    - recommended
+  annotations:
+    backstage.io/time-saved: "8 jam"  # Estimasi waktu setup manual
+
+spec:
+  owner: group:platform-team
+  type: service
+
+  # ─── Parameter Form ───────────────────────────────────────────────────────────
+  parameters:
+    - title: "📦 Informasi Service"
+      required:
+        - name
+        - description
+        - owner
+      properties:
+        name:
+          title: Nama Service
+          type: string
+          description: "Nama service dalam format kebab-case (contoh: checkout-api)"
+          pattern: '^[a-z][a-z0-9-]*[a-z0-9]$'
+          ui:autofocus: true
+          ui:help: "Gunakan huruf kecil dan tanda hubung (-). Contoh: user-service, payment-api"
+        description:
+          title: Deskripsi Service
+          type: string
+          description: "Jelaskan fungsi service ini dalam 1-2 kalimat"
+          ui:options:
+            rows: 3
+        owner:
+          title: Owner Team
+          type: string
+          description: "Tim yang bertanggung jawab atas service ini"
+          ui:field: OwnerPicker
+          ui:options:
+            allowedKinds:
+              - Group
+        system:
+          title: System (Domain)
+          type: string
+          description: "Domain bisnis tempat service ini berada"
+          ui:field: EntityPicker
+          ui:options:
+            allowedKinds:
+              - System
+            defaultKind: System
+
+    - title: "⚙️ Konfigurasi Teknis"
+      required:
+        - javaVersion
+        - springBootVersion
+        - port
+      properties:
+        javaVersion:
+          title: Versi Java
+          type: string
+          default: "21"
+          enum:
+            - "21"
+            - "17"
+          enumNames:
+            - "Java 21 (LTS - Recommended)"
+            - "Java 17 (LTS)"
+        springBootVersion:
+          title: Versi Spring Boot
+          type: string
+          default: "3.3.0"
+          enum:
+            - "3.3.0"
+            - "3.2.0"
+          enumNames:
+            - "Spring Boot 3.3.0 (Latest)"
+            - "Spring Boot 3.2.0"
+        port:
+          title: Port Aplikasi
+          type: integer
+          default: 8080
+          minimum: 1024
+          maximum: 65535
+        enableDatabase:
+          title: Gunakan Database?
+          type: boolean
+          default: false
+          ui:help: "Aktifkan jika service membutuhkan PostgreSQL"
+        databaseType:
+          title: Tipe Database
+          type: string
+          default: postgresql
+          enum:
+            - postgresql
+            - mysql
+          enumNames:
+            - PostgreSQL (Recommended)
+            - MySQL
+          ui:displayIf: "enableDatabase"
+        enableKafka:
+          title: Gunakan Kafka/Event Streaming?
+          type: boolean
+          default: false
+
+    - title: "🏗️ Konfigurasi Repository"
+      required:
+        - repoUrl
+      properties:
+        repoUrl:
+          title: Lokasi Repository GitHub
+          type: string
+          ui:field: RepoUrlPicker
+          ui:options:
+            allowedHosts:
+              - github.com
+            allowedOrganizations:
+              - mycompany
+        defaultBranch:
+          title: Default Branch
+          type: string
+          default: main
+          enum:
+            - main
+            - master
+        visibility:
+          title: Visibility
+          type: string
+          default: private
+          enum:
+            - private
+            - internal
+          enumNames:
+            - Private (hanya anggota tim)
+            - Internal (semua karyawan)
+        enableDependabot:
+          title: Aktifkan Dependabot?
+          type: boolean
+          default: true
+          description: "Otomatis buat PR untuk update dependency"
+
+  # ─── Steps Eksekusi ───────────────────────────────────────────────────────────
+  steps:
+    # Step 1: Fetch skeleton template dari GitHub
+    - id: fetch-base
+      name: "📥 Ambil Template Dasar"
+      action: fetch:template
+      input:
+        url: ./skeleton  # Folder skeleton ada di sebelah file template ini
+        values:
+          name: ${{ parameters.name }}
+          description: ${{ parameters.description }}
+          owner: ${{ parameters.owner }}
+          system: ${{ parameters.system }}
+          javaVersion: ${{ parameters.javaVersion }}
+          springBootVersion: ${{ parameters.springBootVersion }}
+          port: ${{ parameters.port }}
+          enableDatabase: ${{ parameters.enableDatabase }}
+          databaseType: ${{ parameters.databaseType }}
+          enableKafka: ${{ parameters.enableKafka }}
+          defaultBranch: ${{ parameters.defaultBranch }}
+          repoName: ${{ (parameters.repoUrl | parseRepoUrl).repo }}
+          orgName: ${{ (parameters.repoUrl | parseRepoUrl).owner }}
+
+    # Step 2: Tambahkan file .dependabot jika diaktifkan
+    - id: fetch-dependabot
+      name: "🤖 Konfigurasi Dependabot"
+      if: ${{ parameters.enableDependabot }}
+      action: fetch:plain:file
+      input:
+        url: ./extras/dependabot.yml
+        targetPath: .github/dependabot.yml
+
+    # Step 3: Buat repository GitHub
+    - id: create-repo
+      name: "🐙 Buat Repository GitHub"
+      action: publish:github
+      input:
+        allowedHosts: ['github.com']
+        description: ${{ parameters.description }}
+        repoUrl: ${{ parameters.repoUrl }}
+        defaultBranch: ${{ parameters.defaultBranch }}
+        repoVisibility: ${{ parameters.visibility }}
+        requireCodeOwnerReviews: true
+        requiredStatusCheckContexts:
+          - "build-and-test"
+          - "sonar-analysis"
+        deleteBranchOnMerge: true
+        topics:
+          - java
+          - spring-boot
+          - microservice
+
+    # Step 4: Daftarkan ke Service Catalog Backstage
+    - id: register-catalog
+      name: "📋 Daftarkan ke Service Catalog"
+      action: catalog:register
+      input:
+        repoContentsUrl: ${{ steps['create-repo'].output.repoContentsUrl }}
+        catalogInfoPath: '/catalog-info.yaml'
+
+    # Step 5: (Opsional) Buat ArgoCD Application
+    - id: create-argocd-app
+      name: "🚀 Buat ArgoCD Application"
+      action: argocd:create-resources
+      input:
+        appName: ${{ parameters.name }}
+        argoInstance: production
+        projectName: default
+        namespace: ${{ parameters.name }}
+        repoUrl: ${{ steps['create-repo'].output.remoteUrl }}
+        path: deploy/helm
+
+  # ─── Output ───────────────────────────────────────────────────────────────────
+  output:
+    links:
+      - title: "🐙 Repository GitHub"
+        url: ${{ steps['create-repo'].output.remoteUrl }}
+        icon: github
+      - title: "📋 Lihat di Service Catalog"
+        url: ${{ steps['register-catalog'].output.entityRef }}
+        icon: catalog
+      - title: "⚡ Aksi berikutnya"
+        url: ${{ steps['create-repo'].output.remoteUrl }}/blob/main/GETTING_STARTED.md
+        icon: docs
+    text:
+      - title: "✅ Service berhasil dibuat!"
+        content: |
+          Repository **${{ parameters.name }}** telah dibuat dengan konfigurasi:
+          - Java ${{ parameters.javaVersion }} + Spring Boot ${{ parameters.springBootVersion }}
+          - CI/CD pipeline (GitHub Actions) sudah terkonfigurasi
+          - Helm chart untuk deployment ke Kubernetes sudah tersedia
+          - Service sudah terdaftar di Backstage Service Catalog
+          
+          **Langkah selanjutnya:**
+          1. Clone repository: `git clone ${{ steps['create-repo'].output.remoteUrl }}`
+          2. Baca `GETTING_STARTED.md` untuk panduan development lokal
+          3. Push code pertama untuk trigger CI/CD pipeline

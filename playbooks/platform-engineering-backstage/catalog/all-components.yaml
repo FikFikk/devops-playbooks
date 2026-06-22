@@ -1,0 +1,231 @@
+---
+# all-components.yaml
+# File ini berisi semua entity Backstage yang dikelola secara terpusat
+# oleh Platform Team. Service individual mendaftar via catalog-info.yaml di repo masing-masing.
+
+##############################################################################
+# DOMAINS
+##############################################################################
+
+apiVersion: backstage.io/v1alpha1
+kind: Domain
+metadata:
+  name: ecommerce
+  description: "Domain E-Commerce — semua service yang terkait dengan transaksi jual beli"
+spec:
+  owner: group:engineering-leadership
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Domain
+metadata:
+  name: platform
+  description: "Domain Platform — tooling internal, infrastructure, dan developer experience"
+spec:
+  owner: group:platform-team
+
+---
+##############################################################################
+# SYSTEMS
+##############################################################################
+
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: ecommerce-platform
+  title: "E-Commerce Platform"
+  description: "Platform utama untuk transaksi jual beli online"
+  tags:
+    - ecommerce
+    - core
+  links:
+    - url: https://architecture.mycompany.com/ecommerce
+      title: Architecture Decision Records
+      icon: document
+spec:
+  owner: group:checkout-team
+  domain: ecommerce
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: internal-developer-platform
+  title: "Internal Developer Platform"
+  description: "Platform tools untuk developer: CI/CD, monitoring, secret management, deployment"
+spec:
+  owner: group:platform-team
+  domain: platform
+
+---
+##############################################################################
+# GROUPS
+##############################################################################
+
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: engineering-leadership
+  description: "Engineering leadership team"
+spec:
+  type: department
+  profile:
+    displayName: Engineering Leadership
+    email: engineering@mycompany.com
+  children:
+    - checkout-team
+    - platform-team
+    - data-team
+    - mobile-team
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: platform-team
+  description: "Tim Platform Engineering — bertanggung jawab atas developer experience dan infrastruktur"
+  annotations:
+    slack.com/channel: "#platform-team"
+  links:
+    - url: https://platform.mycompany.com/runbook
+      title: Platform Runbook
+spec:
+  type: team
+  profile:
+    displayName: Platform Team
+    email: platform@mycompany.com
+    picture: https://mycompany.com/teams/platform.png
+  parent: engineering-leadership
+  children: []
+  members:
+    - andi-pratama
+    - dewi-kusuma
+    - reza-firmansyah
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: checkout-team
+  description: "Tim Checkout — bertanggung jawab atas proses checkout dan pembayaran"
+  annotations:
+    slack.com/channel: "#checkout-team"
+    pagerduty.com/schedule-id: "SCHED001"
+spec:
+  type: team
+  profile:
+    displayName: Checkout Team
+    email: checkout-team@mycompany.com
+  parent: engineering-leadership
+  children: []
+  members:
+    - budi-santoso
+    - siti-rahayu
+    - agus-wijaya
+
+---
+##############################################################################
+# USERS
+##############################################################################
+
+apiVersion: backstage.io/v1alpha1
+kind: User
+metadata:
+  name: andi-pratama
+spec:
+  profile:
+    displayName: Andi Pratama
+    email: andi@mycompany.com
+  memberOf:
+    - platform-team
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: User
+metadata:
+  name: budi-santoso
+spec:
+  profile:
+    displayName: Budi Santoso
+    email: budi@mycompany.com
+  memberOf:
+    - checkout-team
+
+---
+##############################################################################
+# RESOURCES (Infrastructure)
+##############################################################################
+
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: checkout-postgres
+  description: "Database PostgreSQL untuk checkout service"
+  annotations:
+    aws.amazon.com/rds-instance: "mycompany-checkout-prod"
+    backstage.io/managed-by-location: "url:https://github.com/mycompany/infra/blob/main/terraform/rds.tf"
+  tags:
+    - postgresql
+    - database
+    - aws-rds
+spec:
+  type: database
+  owner: group:checkout-team
+  system: ecommerce-platform
+  dependsOn:
+    - resource:aws-vpc-prod
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: order-kafka-topic
+  description: "Kafka topic untuk order events"
+  annotations:
+    confluent.io/cluster-id: "lkc-abc123"
+  tags:
+    - kafka
+    - messaging
+spec:
+  type: messaging
+  owner: group:checkout-team
+  system: ecommerce-platform
+
+---
+##############################################################################
+# LOCATIONS (pointer ke catalog-info.yaml di repo masing-masing)
+##############################################################################
+
+apiVersion: backstage.io/v1alpha1
+kind: Location
+metadata:
+  name: checkout-api-location
+  description: "Location untuk checkout-api service catalog"
+spec:
+  type: url
+  target: https://github.com/mycompany/checkout-api/blob/main/catalog-info.yaml
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Location
+metadata:
+  name: payment-service-location
+spec:
+  type: url
+  target: https://github.com/mycompany/payment-service/blob/main/catalog-info.yaml
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Location
+metadata:
+  name: all-templates
+  description: "Semua Software Templates yang tersedia"
+spec:
+  type: url
+  # GitHub discovery untuk semua template di folder templates/
+  targets:
+    - https://github.com/mycompany/backstage/blob/main/templates/microservice-spring-boot.yaml
+    - https://github.com/mycompany/backstage/blob/main/templates/microservice-nodejs.yaml
+    - https://github.com/mycompany/backstage/blob/main/templates/frontend-react.yaml
+    - https://github.com/mycompany/backstage/blob/main/templates/data-pipeline.yaml
+    - https://github.com/mycompany/backstage/blob/main/templates/lambda-function.yaml
