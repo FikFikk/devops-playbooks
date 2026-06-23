@@ -1,0 +1,14 @@
+## RBAC: Role Minimal untuk CI/CD Pipeline
+## ServiceAccount yang dipakai oleh CI/CD (GitHub Actions, GitLab CI, ArgoCD)
+## dengan izin terbatas hanya untuk deploy, bukan akses secrets atau exec
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cicd-deployer
+  namespace: production
+  labels:
+    app.kubernetes.io/managed-by: security-team
+  annotations:
+    description: "ServiceAccount untuk CI/CD deployment pipeline"
+automountServiceAccountToken: false

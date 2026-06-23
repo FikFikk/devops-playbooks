@@ -1,0 +1,77 @@
+## Job: Jalankan kube-bench (CIS Kubernetes Benchmark)
+## kube-bench mengaudit konfigurasi K8s terhadap standar CIS.
+##
+## Cara pakai: kubectl apply -f scripts/kube-bench-job.yaml
+## Lihat hasil: kubectl logs job/kube-bench -n kube-system
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kube-bench
+  namespace: kube-system
+  labels:
+    app: kube-bench
+    security.io/type: audit
+spec:
+  template:
+    metadata:
+      labels:
+        app: kube-bench
+    spec:
+      hostPID: true
+      restartPolicy: Never
+      serviceAccountName: kube-bench
+      containers:
+        - name: kube-bench
+          image: aquasec/kube-bench:v0.7.3
+          command: ["kube-bench", "--json"]
+          volumeMounts:
+            - name: var-lib-etcd
+              mountPath: /var/lib/etcd
+              readOnly: true
+            - name: var-lib-kubelet
+              mountPath: /var/lib/kubelet
+              readOnly: true
+            - name: var-lib-kube-scheduler
+              mountPath: /var/lib/kube-scheduler
+              readOnly: true
+            - name: var-lib-kube-controller-manager
+              mountPath: /var/lib/kube-controller-manager
+              readOnly: true
+            - name: etc-kubernetes
+              mountPath: /etc/kubernetes
+              readOnly: true
+            - name: etc-cni-netd
+              mountPath: /etc/cni/net.d
+              readOnly: true
+            - name: usr-lib-systemd
+              mountPath: /usr/lib/systemd
+              readOnly: true
+            - name: lib-systemd
+              mountPath: /lib/systemd
+              readOnly: true
+      volumes:
+        - name: var-lib-etcd
+          hostPath:
+            path: /var/lib/etcd
+        - name: var-lib-kubelet
+          hostPath:
+            path: /var/lib/kubelet
+        - name: var-lib-kube-scheduler
+          hostPath:
+            path: /var/lib/kube-scheduler
+        - name: var-lib-kube-controller-manager
+          hostPath:
+            path: /var/lib/kube-controller-manager
+        - name: etc-kubernetes
+          hostPath:
+            path: /etc/kubernetes
+        - name: etc-cni-netd
+          hostPath:
+            path: /etc/cni/net.d
+        - name: usr-lib-systemd
+          hostPath:
+            path: /usr/lib/systemd
+        - name: lib-systemd
+          hostPath:
+            path: /lib/systemd

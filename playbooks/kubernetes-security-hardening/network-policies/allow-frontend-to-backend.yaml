@@ -1,0 +1,28 @@
+## Network Policy: Izinkan Frontend ke Backend
+## Contoh arsitektur 3-tier: Frontend → Backend → Database
+
+## 1. Frontend hanya bisa menerima traffic dari Ingress Controller
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-frontend
+  namespace: production
+  labels:
+    app.kubernetes.io/managed-by: security-team
+spec:
+  podSelector:
+    matchLabels:
+      tier: frontend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080

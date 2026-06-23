@@ -1,0 +1,31 @@
+## Network Policy: Izinkan Monitoring Scrape
+## Prometheus di namespace monitoring bisa scrape metrics dari semua namespace
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape
+  namespace: production
+  labels:
+    app.kubernetes.io/managed-by: security-team
+  annotations:
+    description: "Izinkan Prometheus dari namespace monitoring untuk scrape /metrics"
+spec:
+  podSelector: {}  # Berlaku untuk semua pod
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9090
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8443

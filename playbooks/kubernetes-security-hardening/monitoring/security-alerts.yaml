@@ -1,0 +1,136 @@
+## Prometheus Alert Rules: Kubernetes Security Alerts
+## Deploy ke namespace monitoring
+##
+## kubectl apply -f monitoring/security-alerts.yaml
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kubernetes-security-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    - name: kubernetes.security
+      interval: 60s
+      rules:
+        ## Alert: Ada pod yang berjalan sebagai root
+        - alert: PodRunningAsRoot
+          expr: |
+            count by (namespace, pod, container) (
+              kube_pod_container_info{namespace!~"kube-system|falco|monitoring"}
+            ) and on(namespace, pod)
+            kube_pod_spec_containers_security_context_run_as_user == 0
+          for: 5m
+          labels:
+            severity: warning
+            team: security
+          annotations:
+            summary: "Pod berjalan sebagai root user"
+            description: >
+              Pod {{ $labels.pod }} di namespace {{ $labels.namespace }}
+              container {{ $labels.container }} berjalan sebagai UID 0 (root).
+              Ini melanggar security policy. Segera perbaiki securityContext.
+
+        ## Alert: Pod dengan privileged: true
+        - alert: PrivilegedPodDetected
+          expr: |
+            kube_pod_container_status_running{namespace!~"kube-system"}
+            and on(namespace, pod, container)
+            kube_pod_container_info * on(namespace, pod) group_left()
+            (kube_pod_spec_containers_security_context_privileged == 1)
+          for: 1m
+          labels:
+            severity: critical
+            team: security
+          annotations:
+            summary: "KRITIS: Pod privileged terdeteksi!"
+            description: >
+              Pod {{ $labels.pod }} di namespace {{ $labels.namespace }}
+              berjalan dalam mode privileged. Ini adalah risiko keamanan tinggi.
+
+        ## Alert: ServiceAccount dengan cluster-admin di namespace non-system
+        - alert: ClusterAdminServiceAccount
+          expr: |
+            count by (namespace, serviceaccount) (
+              kube_rolebinding_info{role_kind="ClusterRole", role_name="cluster-admin"}
+              and on(namespace) kube_namespace_labels{namespace!~"kube-system|kube-public"}
+            ) > 0
+          for: 1m
+          labels:
+            severity: critical
+            team: security
+          annotations:
+            summary: "KRITIS: ServiceAccount memiliki cluster-admin!"
+            description: >
+              ServiceAccount {{ $labels.serviceaccount }} di namespace
+              {{ $labels.namespace }} memiliki cluster-admin role.
+              Ini harus diinvestigasi segera.
+
+        ## Alert: Banyak pod tanpa resource limits
+        - alert: PodWithoutResourceLimits
+          expr: |
+            count by (namespace) (
+              kube_pod_container_info{namespace!~"kube-system|monitoring"}
+              unless on(namespace, pod, container)
+              kube_pod_container_resource_limits{resource="memory"}
+            ) > 5
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Banyak pod tanpa resource limits di {{ $labels.namespace }}"
+            description: >
+              {{ $value }} pods di namespace {{ $labels.namespace }}
+              tidak memiliki resource limits. Ini bisa menyebabkan resource
+              exhaustion dan mempengaruhi pod lain.
+
+        ## Alert: Falco events kritis
+        - alert: FalcoCriticalAlert
+          expr: |
+            increase(falco_events_total{rule=~".*", priority="critical"}[5m]) > 0
+          labels:
+            severity: critical
+            team: security
+          annotations:
+            summary: "Falco: Event keamanan KRITIS terdeteksi!"
+            description: >
+              Falco mendeteksi event kritis: {{ $labels.rule }}.
+              Investigasi segera! Periksa Falco UI atau logs.
+
+        ## Alert: Image pull dari registry tidak terdaftar
+        - alert: UnauthorizedImageRegistry
+          expr: |
+            count by (namespace, pod, container, image) (
+              kube_pod_container_info{image!~"myregistry.io/.*|gcr.io/.*|k8s.gcr.io/.*"}
+              and on(namespace) kube_namespace_labels{namespace=~"production|staging"}
+            ) > 0
+          for: 5m
+          labels:
+            severity: warning
+            team: security
+          annotations:
+            summary: "Image dari registry tidak diizinkan"
+            description: >
+              Container {{ $labels.container }} di pod {{ $labels.pod }}
+              menggunakan image {{ $labels.image }} dari registry yang tidak
+              diizinkan. Hanya gunakan registry internal atau yang disetujui.
+
+        ## Alert: Banyak pod restart (possible crypto miner / exploit attempt)
+        - alert: HighPodRestartRate
+          expr: |
+            rate(kube_pod_container_status_restarts_total{namespace!~"kube-system"}[15m]) 
+            * 60 * 15 > 5
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Pod restart terlalu sering: {{ $labels.pod }}"
+            description: >
+              Pod {{ $labels.pod }} di {{ $labels.namespace }} telah restart
+              lebih dari {{ $value | humanize }} kali dalam 15 menit terakhir.
+              Investigasi apakah ini crash loop atau aktivitas mencurigakan.

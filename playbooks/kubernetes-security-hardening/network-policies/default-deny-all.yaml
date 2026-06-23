@@ -1,0 +1,20 @@
+## Network Policy: Default Deny ALL
+## Terapkan ini PERTAMA di setiap namespace sebelum membuka traffic spesifik
+## PENTING: Pastikan sudah ada allow-policy sebelum apply ini di production!
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: production
+  labels:
+    security.io/type: "default-deny"
+    app.kubernetes.io/managed-by: security-team
+  annotations:
+    description: "Blokir semua ingress dan egress secara default. Override dengan policy spesifik."
+spec:
+  podSelector: {}  # Berlaku untuk semua pod di namespace ini
+  policyTypes:
+    - Ingress
+    - Egress
+  # Tidak ada rules = tidak ada traffic yang diizinkan

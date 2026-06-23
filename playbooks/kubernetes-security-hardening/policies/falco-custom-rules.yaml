@@ -1,0 +1,90 @@
+## Falco Custom Rules
+## Tambahkan rules ini untuk mengurangi false positive dan menambah deteksi spesifik
+##
+## Apply: kubectl edit configmap falco-rules -n falco
+## Atau mount sebagai ConfigMap baru
+
+- rule: Terminal Shell in Container
+  desc: >
+    Alert ketika ada shell yang dibuka di dalam container.
+    PENGECUALIAN: Container debug yang memang didesain untuk itu.
+  condition: >
+    spawned_process
+    and container
+    and shell_procs
+    and proc.tty != 0
+    and container_entrypoint
+    and not user_expected_terminal_shell_in_container_conditions
+  output: >
+    Shell dibuka di dalam container!
+    (user=%user.name user_loginuid=%user.loginuid
+     pod=%k8s.pod.name ns=%k8s.ns.name
+     container=%container.id image=%container.image.repository:%container.image.tag
+     shell=%proc.name parent=%proc.pname cmdline=%proc.cmdline)
+  priority: WARNING
+  tags: [container, shell, attack, T1059]
+
+- rule: Write Below Binary Dir
+  desc: >
+    Alert jika ada proses yang menulis ke direktori binary (/bin, /usr/bin, etc.)
+    Ini adalah indikasi modifikasi binary yang mencurigakan.
+  condition: >
+    bin_dir_rename
+    and evt.type in (rename, renameat)
+    and not proc.name in (package_mgmt_binaries)
+  output: >
+    Binary directory dimodifikasi!
+    (user=%user.name command=%proc.cmdline
+     pod=%k8s.pod.name ns=%k8s.ns.name
+     target=%evt.arg.newpath parent=%proc.pname)
+  priority: ERROR
+  tags: [filesystem, attack, T1574]
+
+- rule: Crypto Mining Detected
+  desc: >
+    Deteksi aktivitas crypto mining berdasarkan penggunaan stratum protocol
+    dan connection ke port umum mining pool.
+  condition: >
+    outbound
+    and container
+    and (fd.sport in (3333, 4444, 5555, 7777, 14444, 45700))
+  output: >
+    Kemungkinan crypto mining terdeteksi!
+    (command=%proc.cmdline
+     connection=%fd.name
+     pod=%k8s.pod.name ns=%k8s.ns.name
+     image=%container.image.repository)
+  priority: CRITICAL
+  tags: [network, crypto-mining, attack]
+
+- rule: Unexpected K8s NodePort Connection
+  desc: >
+    Alert ketika container mencoba connect ke kube-apiserver langsung.
+    Normal app tidak perlu akses langsung ke API server.
+  condition: >
+    outbound
+    and container
+    and fd.sport in (6443, 8443)
+    and not proc.name in (kubectl, curl, helm, k9s)
+  output: >
+    Container mencoba akses K8s API! (command=%proc.cmdline
+     connection=%fd.name
+     pod=%k8s.pod.name ns=%k8s.ns.name)
+  priority: WARNING
+  tags: [network, kubernetes, attack]
+
+- rule: Container Escape via Privileged Mount
+  desc: >
+    Deteksi upaya container escape melalui mount host filesystem.
+  condition: >
+    container
+    and evt.type = mount
+    and evt.arg.target startswith "/host"
+    and not proc.name in (systemd, kubelet)
+  output: >
+    CONTAINER ESCAPE ATTEMPT! Mount host filesystem!
+    (user=%user.name command=%proc.cmdline
+     pod=%k8s.pod.name ns=%k8s.ns.name
+     mount_target=%evt.arg.target)
+  priority: CRITICAL
+  tags: [container-escape, attack, T1611]

@@ -1,0 +1,36 @@
+## Kyverno Policies: Aturan Keamanan Kubernetes
+## Install Kyverno dulu: helm install kyverno kyverno/kyverno -n kyverno --create-namespace
+##
+## Terapkan policies ini setelah Kyverno terinstal:
+## kubectl apply -f policies/kyverno-policies.yaml
+
+## Policy 1: Wajib readOnlyRootFilesystem
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-readonly-rootfs
+  annotations:
+    policies.kyverno.io/title: "Wajib ReadOnly Root Filesystem"
+    policies.kyverno.io/category: "Pod Security"
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >-
+      Semua container harus menggunakan readOnlyRootFilesystem: true untuk
+      mencegah modifikasi file sistem di runtime. Aplikasi harus menggunakan
+      emptyDir atau PVC untuk data yang perlu ditulis.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: check-readonly-rootfs
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              namespaces: ["production", "staging"]
+      validate:
+        message: "Container harus menggunakan readOnlyRootFilesystem: true"
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  readOnlyRootFilesystem: true

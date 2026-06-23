@@ -1,0 +1,150 @@
+## Pod Security: Template Pod yang Aman (Restricted Level)
+## Gunakan template ini sebagai dasar semua deployment production
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secure-app-example
+  namespace: production
+  labels:
+    app: secure-app
+    version: "1.0"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: secure-app
+  template:
+    metadata:
+      labels:
+        app: secure-app
+        version: "1.0"
+      annotations:
+        # Untuk Falco: label workload
+        security.io/scanned: "true"
+    spec:
+      # Nonaktifkan automount ServiceAccount token (aktifkan hanya jika perlu)
+      automountServiceAccountToken: false
+
+      # Gunakan ServiceAccount khusus (bukan 'default')
+      serviceAccountName: secure-app-sa
+
+      # Security context di level Pod
+      securityContext:
+        # Jalankan sebagai non-root user/group
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
+        # Aktifkan seccomp profile terbatas
+        seccompProfile:
+          type: RuntimeDefault
+
+        # Tambahan hardening
+        supplementalGroups: [1000]
+
+      # Hindari scheduling di node yang sama (HA)
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: secure-app
+
+      containers:
+        - name: app
+          # Pin image ke digest (bukan tag floating!)
+          image: myregistry.io/secure-app:1.0@sha256:abc123...
+          imagePullPolicy: Always
+
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+
+          # Security context di level Container
+          securityContext:
+            # TIDAK boleh privilege escalation
+            allowPrivilegeEscalation: false
+            privileged: false
+
+            # Read-only filesystem (cegah modifikasi runtime)
+            readOnlyRootFilesystem: true
+
+            # Drop SEMUA capabilities, tambah hanya yang perlu
+            capabilities:
+              drop: ["ALL"]
+              # add: ["NET_BIND_SERVICE"]  # Hanya jika port < 1024
+
+            # Jalankan sebagai user non-root
+            runAsNonRoot: true
+            runAsUser: 1000
+
+          # Resource limits WAJIB ada (cegah resource exhaustion)
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+
+          # Volume untuk writable dirs (karena readOnlyRootFilesystem: true)
+          volumeMounts:
+            - name: tmp-dir
+              mountPath: /tmp
+            - name: cache-dir
+              mountPath: /app/cache
+
+          # Health check yang tepat
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+          # Jangan inject secrets sebagai env var! Pakai volume mount
+          # env:
+          #   - name: DB_PASSWORD  # JANGAN LAKUKAN INI
+          #     valueFrom:
+          #       secretKeyRef:
+          #         name: db-secrets
+          #         key: password
+
+          # Gunakan volume mount untuk secrets
+          # volumeMounts:
+          #   - name: db-credentials
+          #     mountPath: /secrets/db
+          #     readOnly: true
+
+      volumes:
+        - name: tmp-dir
+          emptyDir:
+            sizeLimit: 100Mi
+        - name: cache-dir
+          emptyDir:
+            sizeLimit: 500Mi
+        # Contoh mount secret sebagai file (lebih aman dari env var)
+        # - name: db-credentials
+        #   secret:
+        #     secretName: db-secrets
+        #     defaultMode: 0400  # Read-only oleh owner saja
+
+      # Toleransi tidak ada (hanya schedule di node biasa)
+      tolerations: []
+
+      # Prioritas pod
+      priorityClassName: high-priority
+
+
+## ServiceAccount untuk aplikasi ditaruh di file terpisah: secure-app-sa.yaml

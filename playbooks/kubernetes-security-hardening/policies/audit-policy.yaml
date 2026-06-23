@@ -1,0 +1,95 @@
+## Audit Policy untuk Kubernetes API Server
+## File ini harus dikopikan ke control plane dan direferensikan oleh kube-apiserver
+##
+## Copy ke: /etc/kubernetes/audit-policy.yaml
+## Tambahkan ke kube-apiserver manifest:
+##   --audit-log-path=/var/log/kubernetes/audit.log
+##   --audit-log-maxage=30
+##   --audit-log-maxbackup=10
+##   --audit-log-maxsize=100
+##   --audit-policy-file=/etc/kubernetes/audit-policy.yaml
+
+apiVersion: audit.k8s.io/v1
+kind: Policy
+rules:
+  ## Level None: Jangan log request-request yang tidak penting (reduce noise)
+
+  # Jangan log kube-system namespace health checks
+  - level: None
+    users:
+      - "system:kube-proxy"
+    verbs: ["watch"]
+    resources:
+      - group: ""
+        resources: ["endpoints", "services", "services/status"]
+
+  # Jangan log kubelet auth delegasi
+  - level: None
+    users:
+      - "kubelet"
+    verbs: ["get"]
+    resources:
+      - group: ""
+        resources: ["nodes", "nodes/status"]
+
+  # Jangan log node/controller manager read-only
+  - level: None
+    users:
+      - "system:kube-controller-manager"
+      - "system:kube-scheduler"
+      - "system:serviceaccount:kube-system:endpoint-controller"
+    verbs: ["get", "list", "watch"]
+    resources:
+      - group: ""
+        resources: ["endpoints"]
+
+  # Jangan log readiness/liveness probe calls
+  - level: None
+    nonResourceURLs:
+      - "/healthz*"
+      - "/readyz*"
+      - "/livez*"
+
+  ## Level Metadata: Log metadata saja untuk request volume tinggi
+
+  # Log akses ke secrets (metadata saja, BUKAN isi secret!)
+  # Note: Untuk compliance tinggi, gunakan Request level
+  - level: Metadata
+    resources:
+      - group: ""
+        resources: ["secrets", "configmaps"]
+      - group: "authentication.k8s.io"
+        resources: ["tokenreviews"]
+
+  # Log semua modifikasi ke pods
+  - level: Request
+    verbs: ["create", "update", "patch", "delete"]
+    resources:
+      - group: ""
+        resources: ["pods", "pods/exec", "pods/portforward"]
+
+  # Log exec ke container (PENTING untuk security!)
+  - level: RequestResponse
+    resources:
+      - group: ""
+        resources: ["pods/exec", "pods/attach"]
+
+  # Log perubahan RBAC
+  - level: RequestResponse
+    verbs: ["create", "update", "patch", "delete"]
+    resources:
+      - group: "rbac.authorization.k8s.io"
+        resources:
+          ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+
+  # Log perubahan NetworkPolicy
+  - level: RequestResponse
+    verbs: ["create", "update", "patch", "delete"]
+    resources:
+      - group: "networking.k8s.io"
+        resources: ["networkpolicies"]
+
+  ## Default: Log metadata untuk semua request lainnya
+  - level: Metadata
+    omitStages:
+      - RequestReceived
