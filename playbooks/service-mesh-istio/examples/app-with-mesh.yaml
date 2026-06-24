@@ -1,0 +1,201 @@
+# ─────────────────────────────────────────────────────────────────
+# Contoh Aplikasi Production-Ready dengan Istio
+# ─────────────────────────────────────────────────────────────────
+# Template ini menunjukkan:
+# - Deployment dengan semua required labels
+# - Service yang benar
+# - ServiceAccount (untuk mTLS identity)
+# - Resource limits yang tepat
+# - Health probes yang kompatibel dengan Istio
+# Ganti semua nilai <placeholder> sesuai kebutuhan
+
+---
+# ServiceAccount — Identity SPIFFE untuk mTLS
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: my-app-sa
+  namespace: production
+  labels:
+    app: my-app
+
+---
+# Deployment — v1
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app-v1
+  namespace: production
+  labels:
+    app: my-app
+    version: v1
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: my-app
+      version: v1
+  template:
+    metadata:
+      labels:
+        # WAJIB: app + version label agar Istio bisa track
+        app: my-app
+        version: v1
+      annotations:
+        # Override resource sidecar untuk app tertentu
+        sidecar.istio.io/proxyCPU: "200m"
+        sidecar.istio.io/proxyMemory: "256Mi"
+        # Inject annotations tambahan
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      serviceAccountName: my-app-sa     # Binding ke ServiceAccount
+
+      # Security context di pod level
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+
+      containers:
+        - name: my-app
+          image: my-registry/my-app:1.0.0
+
+          # WAJIB: eksplisit define port
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+
+          # Resource limits — WAJIB di production
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+          # Environment variables
+          env:
+            - name: PORT
+              value: "8080"
+            - name: LOG_LEVEL
+              value: "info"
+            - name: METRICS_PORT
+              value: "9090"
+
+          # Health probes — jangan gunakan path yang butuh auth
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+
+          # Startup probe — beri waktu lebih untuk cold start
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            failureThreshold: 30
+            periodSeconds: 10
+
+          # Graceful shutdown — beri waktu sidecar drain
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+
+      # Terminasi graceful period > timeout aplikasi
+      terminationGracePeriodSeconds: 60
+
+      # Distribusikan pod ke node berbeda
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: my-app
+
+---
+# Service — expose aplikasi
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-app
+  namespace: production
+  labels:
+    app: my-app
+spec:
+  selector:
+    app: my-app                     # Match ke pod dengan label app=my-app
+  ports:
+    - name: http                    # WAJIB: beri nama port (Istio butuh ini)
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+      protocol: TCP
+
+---
+# HorizontalPodAutoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: my-app-hpa
+  namespace: production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: my-app-v1
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    # Scale berdasarkan custom metric dari Istio (RPS per pod)
+    - type: External
+      external:
+        metric:
+          name: istio_requests_total
+          selector:
+            matchLabels:
+              destination_service_name: my-app
+        target:
+          type: AverageValue
+          averageValue: "100"       # Max 100 RPS per pod
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300  # Lebih konservatif saat scale down
+      policies:
+        - type: Percent
+          value: 25
+          periodSeconds: 60

@@ -1,0 +1,104 @@
+# ─────────────────────────────────────────────────────────────────
+# Resilience Configuration — Timeout, Retry, Fault Injection
+# ─────────────────────────────────────────────────────────────────
+
+---
+# Timeout Hierarchy: Gateway → VirtualService → App Code → DB
+# Prinsip: setiap layer timeout LEBIH BESAR dari layer bawahnya
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: resilient-app
+  namespace: production
+spec:
+  hosts:
+    - my-app
+  http:
+    # ── API Endpoints Read-Only (GET) ─────────────────────────────
+    - match:
+        - method:
+            exact: GET
+          uri:
+            prefix: /api/
+      route:
+        - destination:
+            host: my-app
+            subset: v1
+      timeout: 5s                     # GET harus cepat
+      retries:
+        attempts: 3                   # Retry GET: aman (idempotent)
+        perTryTimeout: 1500ms
+        retryOn: "gateway-error,connect-failure,retriable-4xx,503"
+        retryRemoteLocalities: true   # Coba locality lain saat retry
+
+    # ── Operasi Write (POST/PUT/PATCH) ────────────────────────────
+    - match:
+        - method:
+            regex: "POST|PUT|PATCH"
+      route:
+        - destination:
+            host: my-app
+            subset: v1
+      timeout: 30s                    # Write butuh waktu lebih
+      retries:
+        attempts: 1                   # JANGAN retry write! Bahaya double-submit
+        perTryTimeout: 29s
+        # Hanya retry jika jelas server belum menerima request
+        retryOn: "connect-failure"
+
+    # ── Default ───────────────────────────────────────────────────
+    - route:
+        - destination:
+            host: my-app
+            subset: v1
+      timeout: 10s
+      retries:
+        attempts: 2
+        perTryTimeout: 4s
+        retryOn: "gateway-error,connect-failure"
+
+---
+# Fault Injection — Testing Resiliensi di Staging
+# JANGAN enable di production tanpa feature flag!
+# Gunakan untuk: chaos testing, verifikasi circuit breaker, timeout test
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: fault-injection-test
+  namespace: staging              # Hanya di staging!
+spec:
+  hosts:
+    - my-app
+  http:
+    # Simulate latency 50% request (2 detik delay)
+    - match:
+        - headers:
+            x-chaos-test:
+              exact: "latency"
+      fault:
+        delay:
+          percentage:
+            value: 50.0             # 50% request kena delay
+          fixedDelay: 2s
+      route:
+        - destination:
+            host: my-app
+
+    # Simulate 20% error rate (500 responses)
+    - match:
+        - headers:
+            x-chaos-test:
+              exact: "error"
+      fault:
+        abort:
+          percentage:
+            value: 20.0             # 20% request return 500
+          httpStatus: 500
+      route:
+        - destination:
+            host: my-app
+
+    # Default: tanpa fault
+    - route:
+        - destination:
+            host: my-app

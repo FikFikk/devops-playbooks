@@ -1,0 +1,75 @@
+# ─────────────────────────────────────────────────────────────────
+# Telemetry API — Konfigurasi Observability Istio
+# ─────────────────────────────────────────────────────────────────
+# Istio 1.18+ mendukung Telemetry API untuk konfigurasi metrics & tracing
+
+---
+# Telemetry global — apply ke seluruh mesh
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: global-telemetry
+  namespace: istio-system            # Root namespace = global
+spec:
+  # Distributed tracing
+  tracing:
+    - providers:
+        - name: jaeger                # Sesuaikan dengan nama provider di meshconfig
+      randomSamplingPercentage: 1.0  # 1% sampling di production
+      customTags:
+        # Tambahkan custom tags ke setiap span
+        env:
+          literal:
+            value: "production"
+        version:
+          header:
+            name: x-app-version
+            defaultValue: "unknown"
+
+  # Metrics — gunakan Prometheus backend
+  metrics:
+    - providers:
+        - name: prometheus
+      # Override default metric labels
+      overrides:
+        # Tambahkan label custom ke semua Istio metrics
+        - match:
+            metric: ALL_METRICS
+          tagOverrides:
+            app_version:
+              value: "upstream_peer.labels['version']"
+            environment:
+              value: "production"
+
+    # Disable metrics yang tidak diperlukan (hemat storage)
+    - providers:
+        - name: prometheus
+      overrides:
+        - match:
+            metric: REQUEST_COUNT
+            mode: CLIENT             # Hanya di client side (avoid double counting)
+          disabled: false
+        - match:
+            metric: TCP_SENT_BYTES   # Disable TCP metrics jika tidak diperlukan
+          disabled: true
+        - match:
+            metric: TCP_RECEIVED_BYTES
+          disabled: true
+
+  # Access logging
+  accessLogging:
+    - providers:
+        - name: envoy               # Provider default
+
+---
+# Telemetry override per-namespace (staging: higher sampling)
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: staging-telemetry
+  namespace: staging
+spec:
+  tracing:
+    - providers:
+        - name: jaeger
+      randomSamplingPercentage: 100.0  # 100% sampling di staging (untuk debug)

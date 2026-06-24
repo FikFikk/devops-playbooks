@@ -1,0 +1,39 @@
+# ─────────────────────────────────────────────────────────────────
+# Canary Deployment — Traffic Splitting Bertahap
+# ─────────────────────────────────────────────────────────────────
+# Strategi: mulai 5% ke v2, monitor, tingkatkan secara bertahap
+
+---
+# FASE 1: Awal 5% → v2
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: my-app-canary
+  namespace: production
+  annotations:
+    # Track fase canary saat ini
+    deployment.istio.io/canary-phase: "phase-1-5pct"
+    deployment.istio.io/canary-start: "2026-06-24T00:00:00Z"
+spec:
+  hosts:
+    - my-app
+  gateways:
+    - mesh
+    - istio-ingressgateway
+  http:
+    - route:
+        - destination:
+            host: my-app
+            subset: v1
+          weight: 95              # 95% traffic ke v1 (stable)
+        - destination:
+            host: my-app
+            subset: v2
+          weight: 5               # 5% traffic ke v2 (canary)
+
+      # Timeout untuk canary (bisa berbeda dari stable)
+      timeout: 10s
+      retries:
+        attempts: 2
+        perTryTimeout: 3s
+        retryOn: "gateway-error,connect-failure"

@@ -1,0 +1,187 @@
+# ─────────────────────────────────────────────────────────────────
+# Prometheus AlertRules untuk Istio Service Mesh
+# ─────────────────────────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: istio-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    # ── Service Health Alerts ─────────────────────────────────────
+    - name: istio.service_health
+      interval: 30s
+      rules:
+        # Error rate tinggi (>5% dalam 5 menit)
+        - alert: IstioHighErrorRate
+          expr: |
+            (
+              sum(rate(istio_requests_total{
+                reporter="destination",
+                response_code=~"5.."
+              }[5m])) by (destination_service_name, destination_service_namespace)
+              /
+              sum(rate(istio_requests_total{
+                reporter="destination"
+              }[5m])) by (destination_service_name, destination_service_namespace)
+            ) * 100 > 5
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Error rate tinggi pada service {{ $labels.destination_service_name }}"
+            description: |
+              Service {{ $labels.destination_service_name }} di namespace 
+              {{ $labels.destination_service_namespace }} memiliki error rate 
+              {{ $value | printf "%.2f" }}% (threshold: 5%) dalam 5 menit terakhir.
+            runbook: "https://wiki.example.com/runbooks/high-error-rate"
+
+        # Error rate kritis (>20%)
+        - alert: IstioServiceDown
+          expr: |
+            (
+              sum(rate(istio_requests_total{
+                reporter="destination",
+                response_code=~"5.."
+              }[5m])) by (destination_service_name, destination_service_namespace)
+              /
+              sum(rate(istio_requests_total{
+                reporter="destination"
+              }[5m])) by (destination_service_name, destination_service_namespace)
+            ) * 100 > 20
+          for: 2m
+          labels:
+            severity: critical
+            team: platform
+            pagerduty: "true"
+          annotations:
+            summary: "Service {{ $labels.destination_service_name }} kemungkinan down"
+            description: |
+              ERROR RATE KRITIS: {{ $value | printf "%.2f" }}% untuk service
+              {{ $labels.destination_service_name }}. Segera investigasi!
+
+    # ── Latency Alerts ────────────────────────────────────────────
+    - name: istio.latency
+      interval: 30s
+      rules:
+        # P99 latency > 1 detik
+        - alert: IstioHighLatencyP99
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(istio_request_duration_milliseconds_bucket{
+                reporter="destination"
+              }[5m])) by (destination_service_name, destination_service_namespace, le)
+            ) > 1000
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Latency P99 tinggi: {{ $labels.destination_service_name }}"
+            description: |
+              P99 latency untuk {{ $labels.destination_service_name }} adalah 
+              {{ $value | printf "%.0f" }}ms (threshold: 1000ms)
+
+        # P50 latency > 500ms (SLO breach)
+        - alert: IstioSLOLatencyBreach
+          expr: |
+            histogram_quantile(0.50,
+              sum(rate(istio_request_duration_milliseconds_bucket{
+                reporter="destination"
+              }[5m])) by (destination_service_name, le)
+            ) > 500
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "P50 latency SLO breach: {{ $labels.destination_service_name }}"
+
+    # ── Circuit Breaker Alerts ────────────────────────────────────
+    - name: istio.circuit_breaker
+      rules:
+        # Circuit breaker aktif
+        - alert: IstioCircuitBreakerOpen
+          expr: |
+            sum(increase(envoy_cluster_circuit_breakers_default_rq_open[5m])) 
+            by (cluster_name) > 0
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Circuit breaker terbuka: {{ $labels.cluster_name }}"
+            description: |
+              Circuit breaker cluster {{ $labels.cluster_name }} telah terbuka,
+              menandakan service sedang bermasalah.
+
+        # Connection pool penuh (menandakan overload)
+        - alert: IstioConnectionPoolExhausted
+          expr: |
+            sum(rate(envoy_cluster_upstream_cx_overflow[5m])) by (cluster_name) > 10
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Connection pool habis: {{ $labels.cluster_name }}"
+
+    # ── mTLS Alerts ───────────────────────────────────────────────
+    - name: istio.security
+      rules:
+        # Ada traffic non-mTLS di namespace yang seharusnya strict
+        - alert: IstioNonMTLSTrafficDetected
+          expr: |
+            sum(
+              rate(istio_requests_total{
+                connection_security_policy="none",
+                destination_service_namespace="production"
+              }[5m])
+            ) by (destination_service_name) > 0
+          for: 5m
+          labels:
+            severity: critical
+            security: "true"
+          annotations:
+            summary: "Traffic non-mTLS terdeteksi di production!"
+            description: |
+              Service {{ $labels.destination_service_name }} menerima traffic tanpa mTLS
+              di namespace production. Ini bisa indikasi misconfiguration atau security breach.
+
+    # ── Control Plane Alerts ──────────────────────────────────────
+    - name: istio.control_plane
+      rules:
+        # Istiod push errors
+        - alert: IstiodPushErrors
+          expr: |
+            sum(rate(pilot_xds_push_context_errors[5m])) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Istiod mengalami error saat push konfigurasi"
+
+        # Banyak proxy yang tidak sync
+        - alert: IstioProxySyncLag
+          expr: |
+            max(pilot_proxy_convergence_time_bucket{le="1000"}) < 0.9
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Proxy convergence lambat — >10% proxy tidak sync dalam 1 detik"
+
+        # Istiod memory tinggi
+        - alert: IstiodHighMemory
+          expr: |
+            container_memory_usage_bytes{
+              container="discovery",
+              namespace="istio-system"
+            } / container_spec_memory_limit_bytes{
+              container="discovery"
+            } * 100 > 80
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Istiod memory usage tinggi: {{ $value | printf \"%.0f\" }}%"

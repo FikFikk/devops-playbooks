@@ -1,0 +1,217 @@
+# IstioOperator — Konfigurasi Production-Ready
+# Gunakan: istioctl install -f configs/istio-operator.yaml --verify
+#
+# Profile: production dengan tuning:
+# - High availability (3 replicas istiod)
+# - Resource limits
+# - Auto-scaling enabled
+# - Tracing dengan sampling 1%
+# - Access logging ke stdout
+
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: production-istio
+  namespace: istio-system
+spec:
+  profile: default
+
+  # ─── Versi Mesh ───────────────────────────────────────────────
+  meshConfig:
+    # Distributed tracing — kirim ke Jaeger
+    defaultConfig:
+      tracing:
+        zipkin:
+          address: jaeger-collector.monitoring:9411
+        sampling: 1.0          # 1% sampling di production (hemat resource)
+        # Untuk staging: sampling: 100.0
+
+    # Access log ke stdout (dikumpulkan oleh log aggregator)
+    accessLogFile: /dev/stdout
+    accessLogFormat: |
+      {
+        "timestamp": "%START_TIME%",
+        "method": "%REQ(:METHOD)%",
+        "path": "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%",
+        "protocol": "%PROTOCOL%",
+        "response_code": "%RESPONSE_CODE%",
+        "response_flags": "%RESPONSE_FLAGS%",
+        "duration": "%DURATION%",
+        "upstream_host": "%UPSTREAM_HOST%",
+        "upstream_cluster": "%UPSTREAM_CLUSTER%",
+        "x_forwarded_for": "%REQ(X-FORWARDED-FOR)%",
+        "user_agent": "%REQ(USER-AGENT)%",
+        "request_id": "%REQ(X-REQUEST-ID)%",
+        "trace_id": "%REQ(X-B3-TRACEID)%"
+      }
+
+    # Enable mutual TLS by default (bisa di-override per namespace)
+    enableTracing: true
+
+    # Outbound traffic policy: ALLOW_ANY = izinkan traffic ke eksternal
+    # Ganti ke REGISTRY_ONLY untuk kontrol penuh (butuh ServiceEntry)
+    outboundTrafficPolicy:
+      mode: ALLOW_ANY   # Prodution strict: REGISTRY_ONLY
+
+    # Extend locality load balancing
+    localityLbSetting:
+      enabled: true
+      failover:
+        - from: us-east1
+          to: us-west1
+
+  # ─── Components ──────────────────────────────────────────────
+  components:
+    # Istiod — Control Plane
+    pilot:
+      k8s:
+        # High availability: 3 replicas
+        replicaCount: 3
+
+        # Auto-scaling
+        hpaSpec:
+          minReplicas: 2
+          maxReplicas: 5
+          metrics:
+            - type: Resource
+              resource:
+                name: cpu
+                target:
+                  type: Utilization
+                  averageUtilization: 60
+
+        # Resource limits
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2048Mi
+          limits:
+            cpu: 1000m
+            memory: 4096Mi
+
+        # Pod Disruption Budget — minimal 1 istiod saat update
+        podDisruptionBudget:
+          minAvailable: 1
+
+        # Tolerasi node yang punya taint tertentu
+        tolerations:
+          - key: "dedicated"
+            operator: "Equal"
+            value: "istio"
+            effect: "NoSchedule"
+
+        # Affinitas istiod ke node yang berbeda (HA)
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector:
+                    matchLabels:
+                      app: istiod
+                  topologyKey: kubernetes.io/hostname
+
+    # Ingress Gateway
+    ingressGateways:
+      - name: istio-ingressgateway
+        enabled: true
+        k8s:
+          replicaCount: 3
+          hpaSpec:
+            minReplicas: 2
+            maxReplicas: 10
+            metrics:
+              - type: Resource
+                resource:
+                  name: cpu
+                  target:
+                    type: Utilization
+                    averageUtilization: 70
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 2000m
+              memory: 1024Mi
+          service:
+            type: LoadBalancer
+            # Annotations untuk cloud provider
+            annotations:
+              # AWS
+              service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+              service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+              # GCP — uncomment jika GKE
+              # cloud.google.com/load-balancer-type: "External"
+          # Expose ports yang dibutuhkan
+          ports:
+            - containerPort: 15021   # Health check
+              protocol: TCP
+            - containerPort: 8080    # HTTP
+              protocol: TCP
+            - containerPort: 8443    # HTTPS
+              protocol: TCP
+
+    # Egress Gateway — kontrol traffic keluar (opsional tapi recommended)
+    egressGateways:
+      - name: istio-egressgateway
+        enabled: true
+        k8s:
+          replicaCount: 2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+  # ─── Global Values ────────────────────────────────────────────
+  values:
+    global:
+      # Logging level untuk Envoy sidecar
+      proxy:
+        logLevel: warning           # production: warning, debug: debug
+        componentLogLevel: "misc:error"
+
+        # Resource per sidecar (sangat penting untuk cluster besar!)
+        resources:
+          requests:
+            cpu: 100m               # Baseline per pod
+            memory: 128Mi
+          limits:
+            cpu: 2000m              # Burst saat traffic spike
+            memory: 1024Mi
+
+        # Lifecycle hooks — graceful shutdown
+        lifecycle:
+          postStart:
+            exec:
+              command:
+                - pilot-agent
+                - wait
+          preStop:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - "sleep 5"         # Beri waktu upstream drain connections
+
+      # Certificate rotation period
+      pilotCertProvider: istiod
+
+      # Image pull policy
+      imagePullPolicy: IfNotPresent
+
+    # Pilot tuning
+    pilot:
+      # Autoscale berdasarkan jumlah connected proxies
+      autoscaleEnabled: true
+
+      # Env vars untuk Istiod
+      env:
+        # Interval push config ke Envoy
+        PILOT_PUSH_THROTTLE: "100"
+        # Interval cek health
+        PILOT_DEBOUNCE_AFTER: "500ms"
+        PILOT_DEBOUNCE_MAX: "10s"

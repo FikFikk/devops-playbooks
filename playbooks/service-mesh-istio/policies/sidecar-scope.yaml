@@ -1,0 +1,52 @@
+# ─────────────────────────────────────────────────────────────────
+# Sidecar Scope — Batasi Visibility Envoy di Cluster Besar
+# ─────────────────────────────────────────────────────────────────
+# Di cluster besar (100+ services), Envoy per-pod load semua service config
+# → memory bloat dan lambatnya convergence
+# Sidecar resource membatasi scope ini
+
+apiVersion: networking.istio.io/v1beta1
+kind: Sidecar
+metadata:
+  name: production-sidecar-scope
+  namespace: production
+spec:
+  # Berlaku untuk semua workload di namespace ini
+  # (jika tidak ada selector, berlaku untuk semua)
+  egress:
+    # Izinkan akses ke:
+    - hosts:
+        - "production/*"           # Semua service di namespace production
+        - "istio-system/*"         # Control plane Istio
+        - "monitoring/*"           # Stack monitoring (Prometheus, Jaeger)
+        # Jangan include namespace lain yang tidak relevan!
+        # Setiap namespace yang di-include = lebih banyak config di-load Envoy
+
+  # Konfigurasi inbound: terima dari semua (default OK)
+  ingress:
+    - port:
+        number: 8080
+        protocol: HTTP
+        name: http
+    - port:
+        number: 9090
+        protocol: TCP
+        name: metrics
+
+---
+# Sidecar untuk service spesifik yang butuh akses lebih luas
+apiVersion: networking.istio.io/v1beta1
+kind: Sidecar
+metadata:
+  name: api-gateway-sidecar
+  namespace: production
+spec:
+  workloadSelector:
+    labels:
+      app: api-gateway              # Hanya untuk pod dengan label ini
+  egress:
+    - hosts:
+        - "production/*"            # Akses semua service production
+        - "external/*"              # Akses service eksternal
+        - "istio-system/*"
+        - "monitoring/*"

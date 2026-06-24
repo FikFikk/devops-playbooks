@@ -1,0 +1,81 @@
+# ─────────────────────────────────────────────────────────────────
+# Circuit Breaker Configuration
+# ─────────────────────────────────────────────────────────────────
+# Dikonfigurasi via DestinationRule — outlier detection + connection pool
+
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: circuit-breaker-config
+  namespace: production
+spec:
+  host: my-app
+
+  trafficPolicy:
+    # ── Connection Pool ─────────────────────────────────────────
+    # Membatasi jumlah koneksi, bertindak sebagai "bulkhead"
+    connectionPool:
+      tcp:
+        maxConnections: 50            # Max TCP connections ke service
+        connectTimeout: 3s            # Timeout saat establish connection
+      http:
+        http1MaxPendingRequests: 25   # Queue max sebelum reject
+        http2MaxRequests: 50          # Max concurrent requests
+        maxRequestsPerConnection: 5   # Force connection churn (good untuk LB)
+        maxRetries: 2
+        idleTimeout: 90s
+        # h2UpgradePolicy: UPGRADE  # Upgrade ke HTTP/2 jika supported
+
+    # ── Outlier Detection = Circuit Breaker ─────────────────────
+    # Envoy akan "eject" (circuit-break) upstream host yang bermasalah
+    outlierDetection:
+      # Trigger: berapa error berturut-turut sebelum eject?
+      consecutive5xxErrors: 5         # 5x 5xx → eject
+      consecutiveGatewayErrors: 3     # 3x gateway error → eject
+
+      # Statistik berbasis interval
+      interval: 10s                   # Evaluasi setiap 10 detik
+      
+      # Durasi eject: exponential backoff
+      # Eject pertama: 30s, kedua: 60s, dst (max: baseEjectionTime * maxEjectionPercent)
+      baseEjectionTime: 30s           
+
+      # Safety: jangan eject lebih dari X% pod sekaligus
+      # Mencegah semua pod ter-eject saat masalah global
+      maxEjectionPercent: 30         
+
+      # Stop auto-eject jika pool kesehatan < threshold ini
+      # (mencegah death spiral)
+      minHealthPercent: 50
+
+      # Split external vs local outlier (Envoy 1.17+)
+      splitExternalLocalOriginErrors: true
+      consecutiveLocalOriginFailures: 5
+
+    # ── Load Balancing ──────────────────────────────────────────
+    loadBalancer:
+      # Consistent hash → sticky session jika diperlukan
+      # Uncomment untuk sticky-session by cookie:
+      # consistentHash:
+      #   httpCookie:
+      #     name: "session-id"
+      #     ttl: 3600s
+      
+      simple: LEAST_CONN             # Default: least connection
+
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+      trafficPolicy:
+        outlierDetection:
+          consecutive5xxErrors: 10   # Lebih toleran untuk stable version
+          baseEjectionTime: 60s
+
+    - name: canary
+      labels:
+        version: canary
+      trafficPolicy:
+        outlierDetection:
+          consecutive5xxErrors: 3    # Lebih agresif untuk versi baru
+          baseEjectionTime: 30s

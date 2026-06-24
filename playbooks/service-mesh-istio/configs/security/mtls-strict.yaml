@@ -1,0 +1,64 @@
+# ─────────────────────────────────────────────────────────────────
+# Security — mTLS Strict Mode
+# ─────────────────────────────────────────────────────────────────
+# PeerAuthentication: mengontrol mTLS antar pod di dalam mesh
+# AuthorizationPolicy: mengontrol SIAPA yang boleh akses APA
+
+---
+# Step 1: Enable mTLS STRICT untuk namespace production
+# Semua komunikasi antar pod di namespace ini WAJIB pakai mTLS
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default-mtls-strict
+  namespace: production
+spec:
+  mtls:
+    mode: STRICT                    # STRICT | PERMISSIVE | DISABLE
+    # STRICT: tolak koneksi non-mTLS
+    # PERMISSIVE: terima mTLS dan non-mTLS (fase migrasi)
+    # DISABLE: tidak pakai mTLS
+
+---
+# Step 2: mTLS STRICT cluster-wide (root namespace)
+# Berlaku untuk semua namespace yang tidak override
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: global-mtls-strict
+  namespace: istio-system           # Root mesh config
+spec:
+  mtls:
+    mode: STRICT
+
+---
+# Step 3: Override PERMISSIVE untuk namespace tertentu (legacy apps)
+# Gunakan ini selama migrasi service yang belum siap mTLS
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: legacy-permissive
+  namespace: legacy                 # Namespace app lama
+spec:
+  mtls:
+    mode: PERMISSIVE
+
+---
+# Step 4: Override per-service (port-level mTLS)
+# Berguna saat satu service punya port tanpa sidecar (health check, metrics)
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: per-port-mtls
+  namespace: production
+spec:
+  selector:
+    matchLabels:
+      app: my-app                   # Targetkan service tertentu
+  mtls:
+    mode: STRICT                    # Default strict
+  portLevelMtls:
+    "9090":                         # Port metrics — boleh non-mTLS (Prometheus scrape)
+      mode: PERMISSIVE
+    "8080":                         # Port aplikasi — strict
+      mode: STRICT

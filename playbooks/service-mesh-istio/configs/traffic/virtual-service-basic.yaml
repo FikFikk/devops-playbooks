@@ -1,0 +1,177 @@
+# ─────────────────────────────────────────────────────────────────
+# VirtualService — Basic Routing
+# ─────────────────────────────────────────────────────────────────
+# Scenario: route semua traffic ke service "my-app" di port 80
+# dan tambahkan timeout global 10 detik
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: my-app
+  namespace: production
+  labels:
+    app: my-app
+spec:
+  # Traffic yang datang untuk host ini (matches Kubernetes Service name)
+  hosts:
+    - my-app                            # Internal: my-app.production.svc.cluster.local
+    - "app.example.com"                 # Eksternal via Gateway
+
+  # Terapkan rule ini untuk traffic dari Gateway (ingress) DAN internal mesh
+  gateways:
+    - istio-ingressgateway              # Untuk traffic dari luar
+    - mesh                              # Untuk traffic antar-service internal
+
+  http:
+    # ── Rule 1: Header-based routing (debug/internal traffic) ──────
+    - match:
+        - headers:
+            x-debug-user:
+              exact: "internal"
+      route:
+        - destination:
+            host: my-app
+            subset: v2                  # Debug traffic → versi v2
+          weight: 100
+      timeout: 30s                      # Debug boleh lebih lama
+
+    # ── Rule 2: Canary berdasarkan user-agent ─────────────────────
+    - match:
+        - headers:
+            user-agent:
+              regex: ".*Canary.*"
+      route:
+        - destination:
+            host: my-app
+            subset: v2
+          weight: 100
+
+    # ── Rule 3: Default traffic ────────────────────────────────────
+    - route:
+        - destination:
+            host: my-app
+            subset: v1
+          weight: 100
+      timeout: 10s
+      retries:
+        attempts: 3
+        perTryTimeout: 3s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+      # Fault injection untuk testing (komentari di production)
+      # fault:
+      #   delay:
+      #     percentage:
+      #       value: 5.0
+      #     fixedDelay: 2s
+
+---
+# DestinationRule — mendefinisikan subset dan load balancing policy
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: my-app
+  namespace: production
+spec:
+  host: my-app
+
+  # Traffic policy default (berlaku untuk semua subset)
+  trafficPolicy:
+    # Load balancing algorithm
+    loadBalancer:
+      simple: LEAST_CONN              # ROUND_ROBIN | LEAST_CONN | RANDOM | PASSTHROUGH
+
+    # Connection pool — cegah cascade failure
+    connectionPool:
+      tcp:
+        maxConnections: 100           # Max koneksi TCP ke service ini
+        connectTimeout: 2s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+      http:
+        http1MaxPendingRequests: 50   # Antrian max sebelum circuit break
+        http2MaxRequests: 100         # Max concurrent HTTP/2 requests
+        maxRequestsPerConnection: 10  # Batas per koneksi (mencegah hot connection)
+        maxRetries: 3
+        idleTimeout: 90s
+
+    # Outlier detection (circuit breaker)
+    outlierDetection:
+      consecutiveGatewayErrors: 5    # Berapa error sebelum eject
+      consecutive5xxErrors: 5
+      interval: 30s                  # Cek interval
+      baseEjectionTime: 30s          # Durasi eject pertama
+      maxEjectionPercent: 50         # Max 50% pod bisa di-eject sekaligus
+      minHealthPercent: 30           # Stop eject jika <30% pod sehat
+
+    # mTLS enforcement
+    tls:
+      mode: ISTIO_MUTUAL              # Gunakan cert Istio-issued (SPIFFE)
+
+  # Subset — mapping ke Deployment berdasarkan label
+  subsets:
+    - name: v1
+      labels:
+        version: v1                   # Match label di Deployment pod template
+      trafficPolicy:
+        loadBalancer:
+          simple: ROUND_ROBIN
+
+    - name: v2
+      labels:
+        version: v2
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN          # v2 pakai least-conn untuk eksperimen
+
+---
+# Gateway — entry point traffic dari luar cluster
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: production-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: ingressgateway              # Gunakan default Istio ingress gateway
+
+  servers:
+    # HTTPS (production)
+    - port:
+        number: 443
+        name: https
+        protocol: HTTPS
+      hosts:
+        - "app.example.com"
+        - "api.example.com"
+      tls:
+        mode: SIMPLE                   # Terminate TLS di gateway
+        credentialName: example-tls   # Kubernetes Secret berisi cert
+
+    # HTTP dengan redirect ke HTTPS
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "app.example.com"
+      tls:
+        httpsRedirect: true            # Auto-redirect HTTP → HTTPS
+
+---
+# ServiceEntry — daftarkan external service ke mesh
+# Penting saat outboundTrafficPolicy: REGISTRY_ONLY
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: external-database
+  namespace: production
+spec:
+  hosts:
+    - "my-postgres.us-east-1.rds.amazonaws.com"
+  ports:
+    - number: 5432
+      name: postgres
+      protocol: TCP
+  location: MESH_EXTERNAL             # "di luar mesh"
+  resolution: DNS

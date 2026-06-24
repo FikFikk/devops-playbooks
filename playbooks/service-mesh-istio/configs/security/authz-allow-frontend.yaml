@@ -1,0 +1,119 @@
+# ─────────────────────────────────────────────────────────────────
+# AuthorizationPolicy — Allow Rules
+# ─────────────────────────────────────────────────────────────────
+# Setelah deny-all, buka akses secara eksplisit
+
+---
+# Allow: Frontend → Backend API
+# Frontend boleh akses backend API hanya via GET/POST ke /api/*
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-frontend-to-backend
+  namespace: production
+spec:
+  # Target: workload yang menerima traffic (backend)
+  selector:
+    matchLabels:
+      app: backend-api
+
+  action: ALLOW
+
+  rules:
+    - from:
+        # Source harus berasal dari service account frontend
+        - source:
+            principals:
+              # Format SPIFFE: spiffe://<trust-domain>/ns/<namespace>/sa/<service-account>
+              - "cluster.local/ns/production/sa/frontend-sa"
+      to:
+        - operation:
+            methods: ["GET", "POST"]
+            paths: ["/api/*"]          # Hanya endpoint /api/*
+      when:
+        # Optional: kondisi tambahan
+        - key: request.headers[x-api-version]
+          notValues: ["deprecated"]    # Blok request dengan header deprecated
+
+---
+# Allow: Backend → Database
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-backend-to-database
+  namespace: production
+spec:
+  selector:
+    matchLabels:
+      app: postgres
+
+  action: ALLOW
+
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/production/sa/backend-sa"
+      to:
+        - operation:
+            ports: ["5432"]
+
+---
+# Allow: Prometheus → semua service untuk scrape metrics
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-prometheus-scrape
+  namespace: production
+spec:
+  # Berlaku untuk semua workload di namespace ini
+  action: ALLOW
+
+  rules:
+    - from:
+        - source:
+            namespaces: ["monitoring"]          # Hanya dari namespace monitoring
+            principals:
+              - "cluster.local/ns/monitoring/sa/prometheus-sa"
+      to:
+        - operation:
+            paths: ["/metrics"]                 # Hanya endpoint /metrics
+            methods: ["GET"]
+
+---
+# Allow: Istio Ingress Gateway → Frontend
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-ingress-to-frontend
+  namespace: production
+spec:
+  selector:
+    matchLabels:
+      app: frontend
+
+  action: ALLOW
+
+  rules:
+    - from:
+        - source:
+            # Traffic dari Istio Ingress Gateway
+            principals:
+              - "cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"
+
+---
+# Allow: Health checks dari kubelet (tidak pakai mTLS)
+# Diperlukan agar liveness/readiness probe tetap jalan
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-health-checks
+  namespace: production
+spec:
+  action: ALLOW
+
+  rules:
+    - to:
+        - operation:
+            paths: ["/health", "/healthz", "/ready", "/ping"]
+            ports: ["8080"]

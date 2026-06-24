@@ -1,0 +1,18 @@
+# ─────────────────────────────────────────────────────────────────
+# AuthorizationPolicy — Zero-Trust: Deny All, then Allow Selectively
+# ─────────────────────────────────────────────────────────────────
+# Strategi: deny semua koneksi default, lalu buka per use-case
+
+---
+# DENY ALL — terapkan ini pertama untuk namespace production
+# Setelah ini, TIDAK ADA traffic yang bisa masuk sampai ada Allow policy
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all
+  namespace: production
+spec:
+  {}
+  # spec kosong = deny semua inbound traffic
+  # Istio default jika tidak ada policy = ALLOW all
+  # Tapi jika ada SATU policy pun → default jadi DENY, policy jadi whitelist
