@@ -1,0 +1,208 @@
+# =============================================================================
+# Custom Prometheus Queries untuk postgres_exporter
+# Metrics tambahan yang tidak ada di default postgres_exporter
+# File: /etc/postgres_exporter/queries.yml
+# =============================================================================
+
+pg_replication_lag:
+  query: |
+    SELECT
+      extract(epoch from (now() - pg_last_xact_replay_timestamp()))::float AS seconds
+    WHERE pg_is_in_recovery() = true
+  metrics:
+    - seconds:
+        usage: GAUGE
+        description: "Replication lag dalam detik (hanya di replica)"
+
+pg_long_running_queries:
+  query: |
+    SELECT
+      count(*) AS count,
+      max(extract(epoch from (now() - query_start)))::float AS max_duration_seconds
+    FROM pg_stat_activity
+    WHERE state = 'active'
+      AND query NOT LIKE '%pg_stat_activity%'
+      AND query_start IS NOT NULL
+      AND extract(epoch from (now() - query_start)) > 5
+  metrics:
+    - count:
+        usage: GAUGE
+        description: "Jumlah query yang berjalan > 5 detik"
+    - max_duration_seconds:
+        usage: GAUGE
+        description: "Durasi query terlama dalam detik"
+
+pg_idle_in_transaction:
+  query: |
+    SELECT count(*) AS count
+    FROM pg_stat_activity
+    WHERE state = 'idle in transaction'
+  metrics:
+    - count:
+        usage: GAUGE
+        description: "Jumlah koneksi idle-in-transaction"
+
+pg_table_bloat:
+  query: |
+    SELECT
+      schemaname AS schema,
+      tablename AS table_name,
+      pg_size_bytes(pg_total_relation_size(schemaname||'.'||tablename))::float AS total_size_bytes,
+      CASE WHEN (otta=0 OR sml.relpages=0 OR sml.relpages=otta) THEN 0.0
+        ELSE round((sml.relpages-otta)::numeric/sml.relpages, 4)::float
+      END AS bloat_ratio
+    FROM (
+      SELECT
+        schemaname, tablename, reltuples::numeric,
+        relpages, otta,
+        ROUND(CASE WHEN sml.relpages < otta THEN 0
+          ELSE sml.relpages - otta END::numeric/
+          GREATEST(sml.relpages,1), 4) AS tbloat,
+        CASE WHEN relpages < otta THEN 0
+          ELSE relpages::bigint - otta
+        END AS wastedpages
+      FROM (
+        SELECT
+          schemaname, tablename,
+          bs*tblpages AS real_size, reltu,
+          CEIL((reltu*(4+nullhdr2+pagehdr)/(bs-pagehdr))::numeric) AS otta,
+          tblpages, bs, reltu, reltuples, relpages
+        FROM (
+          SELECT
+            schemaname, tablename,
+            (heappages + toastpages) AS tblpages,
+            (heappages + toastpages) * bs AS real_size,
+            reltu AS reltu, reltuples,
+            CEIL((reltuples *
+              (4 + COALESCE(
+                (SELECT 1+SUM(CASE WHEN s.null_frac<>0 THEN 3 ELSE 0 END)
+                 FROM pg_stats s
+                 WHERE s.schemaname = nspname AND s.tablename = relname),
+                0) +
+              (SELECT SUM(attlen)
+               FROM (
+                 SELECT attlen
+                 FROM pg_attribute a
+                 WHERE a.attrelid = c.oid AND attnum > 0 AND NOT attisdropped
+               ) AS atts)
+            ) / (bs - 24))::numeric) AS otta,
+            bs, relpages
+          FROM (
+            SELECT
+              nspname AS schemaname,
+              relname AS tablename,
+              (SELECT avg(relpages) FROM pg_class WHERE relname=c.relname) AS relpages,
+              reltuples, fillfactor,
+              ceiling(reltuples *
+                (SELECT SUM(avg_width) FROM pg_stats WHERE tablename=c.relname)
+                / (8192 - 28)) AS heappages,
+              COALESCE(toast.relpages, 0) AS toastpages,
+              8192 AS bs
+            FROM pg_class c
+            LEFT JOIN pg_class toast ON c.reltoastrelid = toast.oid
+            WHERE c.relkind = 'r'
+              AND nspname NOT IN ('pg_catalog','information_schema')
+          ) AS s
+        ) AS s2
+      ) AS sml
+    ) AS sml2
+    WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+      AND bloat_ratio > 0.1
+    LIMIT 20
+  metrics:
+    - schema:
+        usage: LABEL
+        description: "Schema name"
+    - table_name:
+        usage: LABEL
+        description: "Table name"
+    - total_size_bytes:
+        usage: GAUGE
+        description: "Total ukuran tabel termasuk index dalam bytes"
+    - bloat_ratio:
+        usage: GAUGE
+        description: "Rasio bloat (0-1, higher = lebih banyak bloat)"
+
+pg_backup_last_completed:
+  query: |
+    SELECT
+      EXTRACT(EPOCH FROM pg_stat_file('backup_label').modification)::float AS timestamp
+    WHERE pg_is_in_recovery() = false
+  metrics:
+    - timestamp:
+        usage: GAUGE
+        description: "Unix timestamp dari backup label terakhir"
+
+pg_index_usage:
+  query: |
+    SELECT
+      schemaname AS schema,
+      relname AS table_name,
+      indexrelname AS index_name,
+      idx_scan,
+      idx_tup_read,
+      idx_tup_fetch,
+      pg_size_bytes(pg_relation_size(indexrelid))::float AS index_size_bytes
+    FROM pg_stat_user_indexes
+    WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+    ORDER BY idx_scan DESC
+    LIMIT 50
+  metrics:
+    - schema:
+        usage: LABEL
+        description: "Schema name"
+    - table_name:
+        usage: LABEL
+        description: "Table name"
+    - index_name:
+        usage: LABEL
+        description: "Index name"
+    - idx_scan:
+        usage: COUNTER
+        description: "Jumlah index scan"
+    - idx_tup_read:
+        usage: COUNTER
+        description: "Jumlah tuple dibaca dari index"
+    - idx_tup_fetch:
+        usage: COUNTER
+        description: "Jumlah tuple di-fetch dari table menggunakan index"
+    - index_size_bytes:
+        usage: GAUGE
+        description: "Ukuran index dalam bytes"
+
+pg_autovacuum_count:
+  query: |
+    SELECT
+      relname AS table_name,
+      last_autovacuum,
+      last_autoanalyze,
+      autovacuum_count,
+      autoanalyze_count,
+      n_dead_tup,
+      n_live_tup,
+      CASE WHEN n_live_tup > 0
+        THEN round(n_dead_tup::numeric/n_live_tup::numeric, 4)::float
+        ELSE 0 END AS dead_tup_ratio
+    FROM pg_stat_user_tables
+    WHERE n_dead_tup > 1000
+    ORDER BY n_dead_tup DESC
+    LIMIT 20
+  metrics:
+    - table_name:
+        usage: LABEL
+        description: "Table name"
+    - autovacuum_count:
+        usage: COUNTER
+        description: "Jumlah kali autovacuum dijalankan"
+    - autoanalyze_count:
+        usage: COUNTER
+        description: "Jumlah kali autoanalyze dijalankan"
+    - n_dead_tup:
+        usage: GAUGE
+        description: "Jumlah dead tuples"
+    - n_live_tup:
+        usage: GAUGE
+        description: "Jumlah live tuples"
+    - dead_tup_ratio:
+        usage: GAUGE
+        description: "Rasio dead tuples vs live tuples"

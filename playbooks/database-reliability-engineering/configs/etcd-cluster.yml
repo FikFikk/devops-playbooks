@@ -1,0 +1,57 @@
+# =============================================================================
+# Konfigurasi etcd Cluster untuk Patroni DCS
+# Jalankan di setiap node database (sesuaikan nama dan IP per node)
+# =============================================================================
+
+# ---- Node 1: db-primary-01 ----
+# File: /etc/etcd/etcd.conf.yml
+
+name: 'db-primary-01'
+data-dir: '/var/lib/etcd'
+wal-dir: '/var/lib/etcd/wal'
+
+# Listeners
+listen-peer-urls: 'http://10.0.1.1:2380'
+listen-client-urls: 'http://10.0.1.1:2379,http://127.0.0.1:2379'
+
+# Advertise URLs (gunakan IP yang bisa diakses node lain)
+advertise-client-urls: 'http://10.0.1.1:2379'
+initial-advertise-peer-urls: 'http://10.0.1.1:2380'
+
+# Cluster bootstrap
+initial-cluster: 'db-primary-01=http://10.0.1.1:2380,db-replica-01=http://10.0.1.2:2380,db-replica-02=http://10.0.1.3:2380'
+initial-cluster-token: 'production-db-cluster-token'
+initial-cluster-state: 'new'
+
+# Election & heartbeat tuning
+heartbeat-interval: 250
+election-timeout: 2500
+
+# Snapshot
+snapshot-count: 5000
+auto-compaction-retention: "1"
+
+# Performance
+max-snapshots: 5
+max-wals: 5
+quota-backend-bytes: 8589934592
+
+# Logging
+log-level: info
+log-outputs: ['/var/log/etcd/etcd.log']
+
+# =============================================================================
+# CATATAN: Untuk node 2 (db-replica-01), ganti:
+#   name: 'db-replica-01'
+#   listen-peer-urls: 'http://10.0.1.2:2380'
+#   listen-client-urls: 'http://10.0.1.2:2379,http://127.0.0.1:2379'
+#   advertise-client-urls: 'http://10.0.1.2:2379'
+#   initial-advertise-peer-urls: 'http://10.0.1.2:2380'
+#
+# Untuk node 3 (db-replica-02), ganti:
+#   name: 'db-replica-02'
+#   listen-peer-urls: 'http://10.0.1.3:2380'
+#   listen-client-urls: 'http://10.0.1.3:2379,http://127.0.0.1:2379'
+#   advertise-client-urls: 'http://10.0.1.3:2379'
+#   initial-advertise-peer-urls: 'http://10.0.1.3:2380'
+# =============================================================================

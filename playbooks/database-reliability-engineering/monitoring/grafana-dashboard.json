@@ -1,0 +1,263 @@
+{
+  "title": "PostgreSQL — Database Reliability Dashboard",
+  "description": "Dashboard komprehensif untuk monitoring PostgreSQL HA cluster",
+  "tags": ["postgresql", "database", "patroni", "production"],
+  "timezone": "Asia/Jakarta",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "🟢 PostgreSQL Status",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "targets": [
+        {
+          "expr": "pg_up{job=\"postgres\"}",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "thresholds": {
+          "mode": "absolute",
+          "steps": [
+            { "color": "red", "value": 0 },
+            { "color": "green", "value": 1 }
+          ]
+        },
+        "mappings": [
+          { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "title": "📊 Transactions Per Second",
+      "type": "timeseries",
+      "gridPos": { "x": 4, "y": 0, "w": 10, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(pg_stat_database_xact_commit{datname!~\"template.*|postgres\"}[5m])) by (datname)",
+          "legendFormat": "{{datname}} — commits"
+        },
+        {
+          "expr": "sum(rate(pg_stat_database_xact_rollback{datname!~\"template.*|postgres\"}[5m])) by (datname)",
+          "legendFormat": "{{datname}} — rollbacks"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "req/s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": 0 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "🔄 Replication Lag",
+      "type": "timeseries",
+      "gridPos": { "x": 14, "y": 0, "w": 10, "h": 8 },
+      "targets": [
+        {
+          "expr": "pg_replication_lag",
+          "legendFormat": "{{instance}} lag"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 30 },
+              { "color": "red", "value": 300 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "💾 Cache Hit Rate",
+      "type": "gauge",
+      "gridPos": { "x": 0, "y": 8, "w": 6, "h": 6 },
+      "targets": [
+        {
+          "expr": "avg(pg_stat_database_blks_hit{datname!~\"template.*\"} / (pg_stat_database_blks_hit{datname!~\"template.*\"} + pg_stat_database_blks_read{datname!~\"template.*\"} + 0.001)) * 100",
+          "legendFormat": "Cache Hit %"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "thresholds": {
+          "mode": "absolute",
+          "steps": [
+            { "color": "red", "value": 0 },
+            { "color": "yellow", "value": 95 },
+            { "color": "green", "value": 98 }
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 90,
+          "max": 100
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "🔌 Active Connections",
+      "type": "timeseries",
+      "gridPos": { "x": 6, "y": 8, "w": 10, "h": 6 },
+      "targets": [
+        {
+          "expr": "sum(pg_stat_activity_count{state=\"active\"}) by (datname)",
+          "legendFormat": "{{datname}} — active"
+        },
+        {
+          "expr": "sum(pg_stat_activity_count{state=\"idle\"}) by (datname)",
+          "legendFormat": "{{datname}} — idle"
+        },
+        {
+          "expr": "sum(pg_stat_activity_count{state=\"idle in transaction\"}) by (datname)",
+          "legendFormat": "{{datname}} — idle in txn"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      }
+    },
+    {
+      "id": 6,
+      "title": "🔒 Lock Waits",
+      "type": "timeseries",
+      "gridPos": { "x": 16, "y": 8, "w": 8, "h": 6 },
+      "targets": [
+        {
+          "expr": "sum(pg_locks_count{mode=\"ExclusiveLock\"}) by (datname)",
+          "legendFormat": "{{datname}} — exclusive locks"
+        },
+        {
+          "expr": "sum(pg_stat_activity_count{wait_event_type=\"Lock\"}) by (datname)",
+          "legendFormat": "{{datname}} — waiting"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "💽 Disk Usage",
+      "type": "bargauge",
+      "gridPos": { "x": 0, "y": 14, "w": 12, "h": 6 },
+      "targets": [
+        {
+          "expr": "pg_database_size_bytes{datname!~\"template.*\"}",
+          "legendFormat": "{{datname}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "bytes" }
+      }
+    },
+    {
+      "id": 8,
+      "title": "📈 Query Latency (p50/p95/p99)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 14, "w": 12, "h": 6 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(pg_stat_statements_seconds_bucket[5m]))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(pg_stat_statements_seconds_bucket[5m]))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(pg_stat_statements_seconds_bucket[5m]))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "id": 9,
+      "title": "🔁 Deadlocks Rate",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 6 },
+      "targets": [
+        {
+          "expr": "rate(pg_stat_database_deadlocks{datname!~\"template.*\"}[5m]) * 60",
+          "legendFormat": "{{datname}} deadlocks/min"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "⚡ WAL Generation Rate",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 20, "w": 12, "h": 6 },
+      "targets": [
+        {
+          "expr": "rate(pg_stat_bgwriter_checkpoint_write_time_total[5m])",
+          "legendFormat": "Checkpoint write time"
+        },
+        {
+          "expr": "rate(pg_stat_bgwriter_buffers_checkpoint_total[5m]) * 8192",
+          "legendFormat": "Bytes written (checkpoints)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "bytes" }
+      }
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "type": "query",
+        "query": "label_values(pg_up, instance)",
+        "label": "Instance",
+        "multi": true,
+        "includeAll": true
+      },
+      {
+        "name": "datname",
+        "type": "query",
+        "query": "label_values(pg_stat_database_numbackends{datname!~\"template.*|postgres\"}, datname)",
+        "label": "Database",
+        "multi": false,
+        "includeAll": false
+      }
+    ]
+  }
+}

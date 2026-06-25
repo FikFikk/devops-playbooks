@@ -1,0 +1,28 @@
+# =============================================================================
+# postgres_exporter Configuration
+# Mengekspor PostgreSQL metrics ke Prometheus
+# File: /etc/postgres_exporter/config.yml
+# =============================================================================
+
+# Jalankan dengan:
+# postgres_exporter \
+#   --config.file=/etc/postgres_exporter/config.yml \
+#   --web.listen-address=":9187" \
+#   --web.telemetry-path="/metrics"
+
+# Atau via environment variable:
+# DATA_SOURCE_NAME="postgresql://monitoring:password@localhost:5432/postgres?sslmode=require"
+
+auth_modules:
+  pgmonitoring:
+    type: userpass
+    userpass:
+      username: monitoring_user
+      password: "GANTI_DENGAN_PASSWORD_MONITORING"
+    options:
+      sslmode: require
+
+# =============================================================================
+# Custom Queries untuk metrics yang lebih detail
+# File: /etc/postgres_exporter/queries.yml
+# =============================================================================

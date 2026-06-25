@@ -1,0 +1,241 @@
+groups:
+  - name: postgresql_alerts
+    interval: 30s
+    rules:
+
+      # =========================================================================
+      # CRITICAL ALERTS — Response segera diperlukan
+      # =========================================================================
+
+      - alert: PostgreSQLDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: database
+        annotations:
+          summary: "PostgreSQL DOWN: {{ $labels.instance }}"
+          description: |
+            PostgreSQL instance {{ $labels.instance }} tidak bisa diakses.
+            Cek: systemctl status postgresql patroni
+            Runbook: https://wiki.perusahaan.com/db/runbook#instance-down
+
+      - alert: PatroniLeaderMissing
+        expr: count(patroni_master == 1) by (scope) == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: database
+        annotations:
+          summary: "Tidak ada Patroni leader di cluster {{ $labels.scope }}"
+          description: |
+            Cluster {{ $labels.scope }} tidak memiliki primary node aktif.
+            SEGERA periksa: patronictl -c /etc/patroni/patroni.yml list
+            Dan status etcd: etcdctl endpoint health
+
+      - alert: PostgreSQLReplicationLagCritical
+        expr: |
+          pg_replication_lag > 300
+        for: 2m
+        labels:
+          severity: critical
+          team: database
+        annotations:
+          summary: "Replication lag sangat tinggi: {{ $value | humanizeDuration }} pada {{ $labels.instance }}"
+          description: |
+            Replica {{ $labels.instance }} tertinggal {{ $value | humanizeDuration }} dari primary.
+            Jika ini berlanjut, failover akan berbahaya (data loss).
+            Cek: SELECT * FROM pg_stat_replication; (di primary)
+
+      - alert: PostgreSQLConnectionsNearLimit
+        expr: |
+          (pg_stat_database_numbackends{datname!~"template.*|postgres"} /
+           pg_settings_max_connections) > 0.85
+        for: 5m
+        labels:
+          severity: critical
+          team: database
+        annotations:
+          summary: "Koneksi DB hampir habis: {{ $value | humanizePercentage }}"
+          description: |
+            Database {{ $labels.datname }} menggunakan {{ $value | humanizePercentage }} dari max_connections.
+            Segera cek: SELECT state, count(*) FROM pg_stat_activity GROUP BY state;
+            Dan: SELECT application_name, count(*) FROM pg_stat_activity GROUP BY application_name;
+
+      - alert: PostgreSQLDiskSpaceCritical
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint=~".*postgresql.*|.*pgdata.*"} /
+           node_filesystem_size_bytes{mountpoint=~".*postgresql.*|.*pgdata.*"}) < 0.10
+        for: 5m
+        labels:
+          severity: critical
+          team: database
+        annotations:
+          summary: "Disk DB hampir penuh: {{ $value | humanizePercentage }} sisa"
+          description: |
+            Disk PostgreSQL di {{ $labels.instance }} hanya tersisa {{ $value | humanizePercentage }}.
+            Cek: du -sh /var/lib/postgresql/
+            Pertimbangkan: archive cleanup, tablespace expansion, atau volume expansion.
+
+      - alert: PostgreSQLBackupStaleCritical
+        expr: |
+          (time() - pgbackrest_backup_timestamp_last_completed) > 90000
+        for: 10m
+        labels:
+          severity: critical
+          team: database
+        annotations:
+          summary: "Backup PostgreSQL tidak berjalan lebih dari 25 jam!"
+          description: |
+            Backup terakhir adalah {{ $value | humanizeDuration }} yang lalu.
+            Cek log: cat /var/log/pgbackrest/backup.log | tail -50
+            Jalankan manual jika perlu: pgbackrest --stanza=production backup --type=full
+
+      # =========================================================================
+      # WARNING ALERTS — Perlu investigasi dalam 1 jam
+      # =========================================================================
+
+      - alert: PostgreSQLReplicationLagWarning
+        expr: |
+          pg_replication_lag > 30
+        for: 5m
+        labels:
+          severity: warning
+          team: database
+        annotations:
+          summary: "Replication lag elevated: {{ $value | humanizeDuration }} pada {{ $labels.instance }}"
+          description: |
+            Replica {{ $labels.instance }} tertinggal {{ $value | humanizeDuration }}.
+            Investigasi network dan disk I/O di replica.
+
+      - alert: PostgreSQLConnectionsWarning
+        expr: |
+          (pg_stat_database_numbackends{datname!~"template.*|postgres"} /
+           pg_settings_max_connections) > 0.70
+        for: 10m
+        labels:
+          severity: warning
+          team: database
+        annotations:
+          summary: "Koneksi DB tinggi: {{ $value | humanizePercentage }}"
+          description: |
+            Database {{ $labels.datname }} menggunakan {{ $value | humanizePercentage }} koneksi.
+            Pertimbangkan untuk review connection pooling di PgBouncer.
+
+      - alert: PostgreSQLSlowQueries
+        expr: |
+          rate(pg_stat_activity_max_tx_duration{state="active",datname!~"template.*"}[5m]) > 60
+        for: 5m
+        labels:
+          severity: warning
+          team: database
+        annotations:
+          summary: "Query lambat terdeteksi di {{ $labels.datname }}"
+          description: |
+            Terdapat transaksi aktif yang berjalan lebih dari 60 detik.
+            Cek: SELECT pid, now()-query_start, query FROM pg_stat_activity WHERE state='active' ORDER BY 2 DESC;
+
+      - alert: PostgreSQLDeadlocks
+        expr: |
+          rate(pg_stat_database_deadlocks{datname!~"template.*"}[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          team: database
+        annotations:
+          summary: "Deadlock terdeteksi di {{ $labels.datname }}: {{ $value | humanize }}/menit"
+          description: |
+            Deadlock rate di {{ $labels.datname }} tinggi.
+            Cek log PostgreSQL: grep -i deadlock /var/lib/postgresql/16/main/log/*.log
+            Review urutan locking di aplikasi.
+
+      - alert: PostgreSQLCacheHitRateWarning
+        expr: |
+          pg_stat_database_blks_hit{datname!~"template.*"} /
+          (pg_stat_database_blks_hit{datname!~"template.*"} +
+           pg_stat_database_blks_read{datname!~"template.*"}) < 0.98
+        for: 15m
+        labels:
+          severity: warning
+          team: database
+        annotations:
+          summary: "Cache hit rate rendah: {{ $value | humanizePercentage }} di {{ $labels.datname }}"
+          description: |
+            Cache hit rate di bawah 98%. Pertimbangkan menaikkan shared_buffers.
+            Saat ini shared_buffers bisa dicek: SHOW shared_buffers;
+
+      - alert: PostgreSQLTableBloat
+        expr: |
+          (pg_table_bloat_size_bytes / pg_table_size_bytes) > 0.3
+        for: 30m
+        labels:
+          severity: warning
+          team: database
+        annotations:
+          summary: "Table bloat tinggi: {{ $labels.tablename }} di {{ $labels.datname }}"
+          description: |
+            Tabel {{ $labels.tablename }} memiliki bloat {{ $value | humanizePercentage }}.
+            Jalankan: VACUUM ANALYZE {{ $labels.tablename }};
+            Jika perlu: VACUUM FULL {{ $labels.tablename }}; (memerlukan lock!)
+
+      - alert: PostgreSQLLongRunningTransaction
+        expr: |
+          max by (instance) (
+            pg_stat_activity_max_tx_duration{state="idle in transaction"}
+          ) > 300
+        for: 2m
+        labels:
+          severity: warning
+          team: database
+        annotations:
+          summary: "Idle transaction lama di {{ $labels.instance }}: {{ $value | humanizeDuration }}"
+          description: |
+            Ada koneksi idle-in-transaction selama {{ $value | humanizeDuration }}.
+            Ini mencegah VACUUM dan menyebabkan bloat.
+            Cek: SELECT pid, query, state, xact_start FROM pg_stat_activity WHERE state='idle in transaction';
+            Kill jika perlu: SELECT pg_terminate_backend(pid);
+
+      - alert: PostgreSQLDiskSpaceWarning
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint=~".*postgresql.*|.*pgdata.*"} /
+           node_filesystem_size_bytes{mountpoint=~".*postgresql.*|.*pgdata.*"}) < 0.25
+        for: 15m
+        labels:
+          severity: warning
+          team: database
+        annotations:
+          summary: "Disk DB mulai penuh: {{ $value | humanizePercentage }} sisa"
+          description: |
+            Disk PostgreSQL di {{ $labels.instance }} tersisa {{ $value | humanizePercentage }}.
+            Rencanakan expansion sebelum mencapai critical threshold.
+
+      - alert: PostgreSQLBackupStaleWarning
+        expr: |
+          (time() - pgbackrest_backup_timestamp_last_completed) > 82800
+        for: 10m
+        labels:
+          severity: warning
+          team: database
+        annotations:
+          summary: "Backup PostgreSQL sudah {{ $value | humanizeDuration }} yang lalu"
+          description: |
+            Backup terakhir adalah {{ $value | humanizeDuration }} yang lalu.
+            Monitor apakah backup jadwal berikutnya berjalan normal.
+
+      # =========================================================================
+      # INFO ALERTS — Untuk awareness
+      # =========================================================================
+
+      - alert: PostgreSQLAutovacuumNotRunning
+        expr: |
+          pg_settings_autovacuum == 0
+        for: 5m
+        labels:
+          severity: warning
+          team: database
+        annotations:
+          summary: "Autovacuum NONAKTIF di {{ $labels.instance }}!"
+          description: |
+            Autovacuum tidak berjalan. Ini akan menyebabkan table bloat dan
+            performa yang memburuk seiring waktu.
+            Aktifkan: ALTER SYSTEM SET autovacuum = on; SELECT pg_reload_conf();
