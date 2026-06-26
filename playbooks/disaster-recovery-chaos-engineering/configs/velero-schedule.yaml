@@ -1,0 +1,103 @@
+# =============================================================================
+# Velero Backup Schedules
+# Konfigurasi backup terjadwal untuk Kubernetes resources dan volumes
+# =============================================================================
+
+---
+# Daily backup — semua namespace production
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: daily-production-backup
+  namespace: velero
+spec:
+  schedule: "0 2 * * *"  # Setiap hari jam 02:00 UTC
+  template:
+    includedNamespaces:
+      - production
+      - monitoring
+      - ingress-nginx
+    excludedResources:
+      - events
+      - events.events.k8s.io
+    storageLocation: default
+    volumeSnapshotLocations:
+      - default
+    defaultVolumesToFsBackup: true
+    ttl: 720h  # Retensi 30 hari
+    metadata:
+      labels:
+        schedule-type: daily
+        environment: production
+    hooks:
+      resources:
+        - name: pre-backup-db-checkpoint
+          includedNamespaces:
+            - production
+          labelSelector:
+            matchLabels:
+              app: postgresql
+          pre:
+            - exec:
+                container: postgresql
+                command:
+                  - /bin/bash
+                  - -c
+                  - "pg_isready && PGPASSWORD=$POSTGRES_PASSWORD psql -U $POSTGRES_USER -c 'CHECKPOINT;'"
+                timeout: 60s
+                onError: Fail
+
+---
+# Weekly full backup — semua namespace
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: weekly-full-backup
+  namespace: velero
+spec:
+  schedule: "0 1 * * 0"  # Setiap Minggu jam 01:00 UTC
+  template:
+    includedNamespaces:
+      - "*"
+    excludedNamespaces:
+      - kube-system
+      - kube-public
+      - kube-node-lease
+      - litmus
+    excludedResources:
+      - events
+      - events.events.k8s.io
+    storageLocation: default
+    volumeSnapshotLocations:
+      - default
+    defaultVolumesToFsBackup: true
+    ttl: 2160h  # Retensi 90 hari
+    metadata:
+      labels:
+        schedule-type: weekly
+        environment: production
+
+---
+# Hourly backup — critical namespaces (data-heavy)
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: hourly-critical-backup
+  namespace: velero
+spec:
+  schedule: "15 * * * *"  # Setiap jam menit ke-15
+  template:
+    includedNamespaces:
+      - production
+    labelSelector:
+      matchLabels:
+        backup-priority: critical
+    storageLocation: default
+    volumeSnapshotLocations:
+      - default
+    defaultVolumesToFsBackup: true
+    ttl: 168h  # Retensi 7 hari
+    metadata:
+      labels:
+        schedule-type: hourly
+        environment: production

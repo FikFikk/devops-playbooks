@@ -1,0 +1,73 @@
+# =============================================================================
+# Eksperimen 01: Pod Delete
+# Tujuan: Menguji self-healing Kubernetes dan auto-recovery aplikasi
+# Hipotesis: Jika pod dihapus, Kubernetes akan membuat pod baru dan
+#            service tetap tersedia dalam waktu < 30 detik
+# =============================================================================
+
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: pod-delete-experiment
+  namespace: production
+  labels:
+    experiment-type: resilience
+    severity: low
+    gameday: "true"
+spec:
+  appinfo:
+    appns: production
+    applabel: "app=frontend"
+    appkind: deployment
+  engineState: active
+  chaosServiceAccount: litmus-admin
+  experiments:
+    - name: pod-delete
+      spec:
+        components:
+          env:
+            # Jumlah pod yang akan dihapus
+            - name: TOTAL_CHAOS_DURATION
+              value: "60"
+            # Interval antar penghapusan pod (detik)
+            - name: CHAOS_INTERVAL
+              value: "10"
+            # Paksa hapus pod (tanpa graceful shutdown)
+            - name: FORCE
+              value: "false"
+            # Jumlah pod yang dihapus per interval
+            - name: PODS_AFFECTED_PERC
+              value: "50"
+            # Urutan penghapusan: random atau serial
+            - name: SEQUENCE
+              value: "parallel"
+        probe:
+          - name: check-frontend-availability
+            type: httpProbe
+            httpProbe/inputs:
+              url: "http://frontend-service.production.svc:80/health"
+              insecureSkipVerify: false
+              method:
+                get:
+                  criteria: "=="
+                  responseCode: "200"
+            mode: Continuous
+            runProperties:
+              probeTimeout: 5s
+              retry: 3
+              interval: 5s
+              probePollingInterval: 2s
+          - name: check-response-time
+            type: promProbe
+            promProbe/inputs:
+              endpoint: "http://prometheus.monitoring.svc:9090"
+              query: "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{namespace='production',service='frontend'}[1m])) by (le))"
+              comparator:
+                type: float
+                criteria: "<="
+                value: "0.5"  # P99 latency harus tetap < 500ms
+            mode: Continuous
+            runProperties:
+              probeTimeout: 10s
+              retry: 2
+              interval: 10s

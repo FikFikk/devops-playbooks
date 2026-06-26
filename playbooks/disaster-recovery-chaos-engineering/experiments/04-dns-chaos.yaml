@@ -1,0 +1,73 @@
+# =============================================================================
+# Eksperimen 04: DNS Chaos
+# Tujuan: Menguji ketahanan aplikasi saat DNS resolution gagal/lambat
+# Hipotesis: Aplikasi memiliki DNS caching dan retry mechanism sehingga
+#            tetap berfungsi saat DNS mengalami gangguan temporer
+# =============================================================================
+
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: dns-chaos-experiment
+  namespace: production
+  labels:
+    experiment-type: resilience
+    severity: medium
+    gameday: "true"
+spec:
+  appinfo:
+    appns: production
+    applabel: "app=backend-api"
+    appkind: deployment
+  engineState: active
+  chaosServiceAccount: litmus-admin
+  experiments:
+    - name: pod-dns-error
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: "90"
+            # Target hostname yang DNS-nya di-error-kan
+            - name: TARGET_HOSTNAMES
+              value: "external-api.example.com,payment-gateway.example.com"
+            # Tipe chaos: error atau spoof
+            - name: MATCH_SCHEME
+              value: "exact"
+            # Container runtime
+            - name: CONTAINER_RUNTIME
+              value: "containerd"
+            - name: SOCKET_PATH
+              value: "/run/containerd/containerd.sock"
+            - name: PODS_AFFECTED_PERC
+              value: "100"
+        probe:
+          - name: check-app-graceful-degradation
+            type: httpProbe
+            httpProbe/inputs:
+              url: "http://backend-api.production.svc:8080/health"
+              insecureSkipVerify: false
+              method:
+                get:
+                  criteria: "=="
+                  responseCode: "200"
+            mode: Continuous
+            runProperties:
+              probeTimeout: 10s
+              retry: 5
+              interval: 10s
+              probePollingInterval: 5s
+          - name: check-circuit-breaker-activated
+            type: promProbe
+            promProbe/inputs:
+              endpoint: "http://prometheus.monitoring.svc:9090"
+              query: "sum(circuit_breaker_state{namespace='production',service='backend-api',state='open'})"
+              comparator:
+                type: float
+                criteria: ">="
+                value: "1"  # Circuit breaker harus terbuka untuk external dependency yang gagal
+            mode: Edge
+            runProperties:
+              probeTimeout: 10s
+              retry: 3
+              interval: 15s

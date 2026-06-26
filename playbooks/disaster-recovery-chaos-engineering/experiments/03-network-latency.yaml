@@ -1,0 +1,82 @@
+# =============================================================================
+# Eksperimen 03: Network Latency Injection
+# Tujuan: Menguji toleransi aplikasi terhadap degradasi jaringan
+# Hipotesis: Dengan tambahan latency 200ms pada network, aplikasi tetap
+#            berfungsi dengan graceful degradation (timeout handling, retry)
+# =============================================================================
+
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: network-latency-experiment
+  namespace: production
+  labels:
+    experiment-type: resilience
+    severity: medium
+    gameday: "true"
+spec:
+  appinfo:
+    appns: production
+    applabel: "app=backend-api"
+    appkind: deployment
+  engineState: active
+  chaosServiceAccount: litmus-admin
+  experiments:
+    - name: pod-network-latency
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: "120"
+            # Tambahan latency dalam milidetik
+            - name: NETWORK_LATENCY
+              value: "200"
+            # Jitter (variasi latency)
+            - name: JITTER
+              value: "50"
+            # Network interface target
+            - name: NETWORK_INTERFACE
+              value: "eth0"
+            # Destination IP yang terkena latency (kosong = semua)
+            - name: DESTINATION_IPS
+              value: ""
+            # Destination hosts
+            - name: DESTINATION_HOSTS
+              value: ""
+            # Percentage of pods affected
+            - name: PODS_AFFECTED_PERC
+              value: "100"
+            # Container runtime
+            - name: CONTAINER_RUNTIME
+              value: "containerd"
+            - name: SOCKET_PATH
+              value: "/run/containerd/containerd.sock"
+        probe:
+          - name: check-response-time-degraded
+            type: promProbe
+            promProbe/inputs:
+              endpoint: "http://prometheus.monitoring.svc:9090"
+              query: "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{namespace='production',service='backend-api'}[1m])) by (le))"
+              comparator:
+                type: float
+                criteria: "<="
+                value: "2.0"  # P95 harus tetap < 2 detik meski ada latency tambahan
+            mode: Continuous
+            runProperties:
+              probeTimeout: 10s
+              retry: 3
+              interval: 15s
+          - name: check-error-rate
+            type: promProbe
+            promProbe/inputs:
+              endpoint: "http://prometheus.monitoring.svc:9090"
+              query: "sum(rate(http_requests_total{namespace='production',service='backend-api',code=~'5..'}[1m])) / sum(rate(http_requests_total{namespace='production',service='backend-api'}[1m])) * 100"
+              comparator:
+                type: float
+                criteria: "<="
+                value: "1.0"  # Error rate harus tetap < 1%
+            mode: Continuous
+            runProperties:
+              probeTimeout: 10s
+              retry: 3
+              interval: 15s

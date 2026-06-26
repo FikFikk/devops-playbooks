@@ -1,0 +1,69 @@
+# =============================================================================
+# Eksperimen 02: Node Drain
+# Tujuan: Simulasikan kegagalan node dan pastikan workload ter-reschedule
+# Hipotesis: Jika satu node di-drain, semua pod akan berpindah ke node lain
+#            dan layanan tetap tersedia tanpa downtime signifikan
+# =============================================================================
+
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: node-drain-experiment
+  namespace: production
+  labels:
+    experiment-type: resilience
+    severity: medium
+    gameday: "true"
+spec:
+  appinfo:
+    appns: production
+    applabel: "app=backend-api"
+    appkind: deployment
+  annotationCheck: "true"
+  engineState: active
+  chaosServiceAccount: litmus-admin
+  experiments:
+    - name: node-drain
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: "120"
+            # Drain hanya satu node
+            - name: APP_NODE
+              value: ""  # Kosongkan untuk random selection
+            # Target node berdasarkan label
+            - name: NODE_LABEL
+              value: "kubernetes.io/role=worker"
+          nodeSelector:
+            kubernetes.io/os: linux
+        probe:
+          - name: check-api-available
+            type: httpProbe
+            httpProbe/inputs:
+              url: "http://backend-api.production.svc:8080/health"
+              insecureSkipVerify: false
+              method:
+                get:
+                  criteria: "=="
+                  responseCode: "200"
+            mode: Continuous
+            runProperties:
+              probeTimeout: 10s
+              retry: 5
+              interval: 5s
+              probePollingInterval: 3s
+          - name: check-pod-distribution
+            type: cmdProbe
+            cmdProbe/inputs:
+              command: "kubectl get pods -n production -l app=backend-api -o wide | awk '{print $7}' | sort | uniq -c | wc -l"
+              comparator:
+                type: int
+                criteria: ">="
+                value: "2"  # Pod harus tersebar di minimal 2 node
+              source: "litmus"
+            mode: Edge
+            runProperties:
+              probeTimeout: 30s
+              retry: 3
+              interval: 10s

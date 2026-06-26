@@ -1,0 +1,322 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "datasource": "Prometheus",
+        "enable": true,
+        "expr": "litmuschaos_experiment_running_status == 1",
+        "iconColor": "red",
+        "name": "Chaos Experiments",
+        "titleFormat": "Chaos: {{chaosresult_name}}"
+      }
+    ]
+  },
+  "description": "Dashboard untuk monitoring Disaster Recovery readiness, backup status, dan chaos experiment results",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "gridPos": { "h": 2, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "options": { "content": "# 🔥 Disaster Recovery & Chaos Engineering Dashboard\nMonitoring DR readiness, backup health, replication status, dan chaos experiment results", "mode": "markdown" },
+      "type": "text",
+      "title": ""
+    },
+    {
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 2 },
+      "id": 2,
+      "targets": [
+        {
+          "expr": "count(kube_node_status_condition{cluster='primary', condition='Ready', status='true'})",
+          "legendFormat": "Primary Nodes"
+        }
+      ],
+      "title": "Primary Nodes Ready",
+      "type": "stat",
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": 0 },
+              { "color": "yellow", "value": 2 },
+              { "color": "green", "value": 3 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 2 },
+      "id": 3,
+      "targets": [
+        {
+          "expr": "count(kube_node_status_condition{cluster='dr', condition='Ready', status='true'})",
+          "legendFormat": "DR Nodes"
+        }
+      ],
+      "title": "DR Nodes Ready",
+      "type": "stat",
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": 0 },
+              { "color": "yellow", "value": 1 },
+              { "color": "green", "value": 2 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 2 },
+      "id": 4,
+      "targets": [
+        {
+          "expr": "(time() - velero_backup_last_successful_timestamp{schedule='daily-production-backup'}) / 3600",
+          "legendFormat": "Hours since last backup"
+        }
+      ],
+      "title": "Hours Since Last Backup",
+      "type": "stat",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "h",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 12 },
+              { "color": "red", "value": 24 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 2 },
+      "id": 5,
+      "targets": [
+        {
+          "expr": "aws_rds_replica_lag_seconds",
+          "legendFormat": "Replication Lag"
+        }
+      ],
+      "title": "DB Replication Lag",
+      "type": "stat",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 60 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 2 },
+      "id": 6,
+      "targets": [
+        {
+          "expr": "aws_route53_health_check_status",
+          "legendFormat": "{{ health_check_name }}"
+        }
+      ],
+      "title": "Health Check Status",
+      "type": "stat",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "options": { "0": { "color": "red", "text": "DOWN" } }, "type": "value" },
+            { "options": { "1": { "color": "green", "text": "UP" } }, "type": "value" }
+          ]
+        }
+      }
+    },
+    {
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 2 },
+      "id": 7,
+      "targets": [
+        {
+          "expr": "count(litmuschaos_experiment_running_status == 1)",
+          "legendFormat": "Active Experiments"
+        }
+      ],
+      "title": "Active Chaos Experiments",
+      "type": "stat",
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "orange", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "id": 10,
+      "targets": [
+        {
+          "expr": "velero_backup_success_total",
+          "legendFormat": "Success"
+        },
+        {
+          "expr": "velero_backup_failure_total",
+          "legendFormat": "Failed"
+        },
+        {
+          "expr": "velero_backup_partial_failure_total",
+          "legendFormat": "Partial Failure"
+        }
+      ],
+      "title": "Backup Success/Failure Over Time",
+      "type": "timeseries",
+      "fieldConfig": {
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Success" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Failed" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          }
+        ]
+      }
+    },
+    {
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "id": 11,
+      "targets": [
+        {
+          "expr": "aws_rds_replica_lag_seconds",
+          "legendFormat": "Lag (seconds)"
+        }
+      ],
+      "title": "Database Replication Lag",
+      "type": "timeseries",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "thresholdsStyle": { "mode": "line+area" }
+          },
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 60 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 14 },
+      "id": 20,
+      "targets": [
+        {
+          "expr": "litmuschaos_experiment_verdict",
+          "legendFormat": "{{ chaosresult_name }} — {{ verdict }}",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "title": "Chaos Experiment Results",
+      "type": "table",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "__name__": true, "Time": false },
+            "renameByName": {
+              "chaosresult_name": "Experiment",
+              "chaosresult_namespace": "Namespace",
+              "verdict": "Result",
+              "Value": "Status"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "id": 30,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{namespace='production'}[5m])) by (le, service))",
+          "legendFormat": "P95 {{ service }}"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{namespace='production'}[5m])) by (le, service))",
+          "legendFormat": "P99 {{ service }}"
+        }
+      ],
+      "title": "Service Latency During Chaos (P95/P99)",
+      "type": "timeseries",
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+      "id": 31,
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{namespace='production', code=~'5..'}[5m])) by (service) / sum(rate(http_requests_total{namespace='production'}[5m])) by (service) * 100",
+          "legendFormat": "{{ service }}"
+        }
+      ],
+      "title": "Error Rate During Chaos (%)",
+      "type": "timeseries",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["disaster-recovery", "chaos-engineering", "dr", "backup"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "All", "value": "$__all" },
+        "datasource": "Prometheus",
+        "definition": "label_values(kube_namespace_created, namespace)",
+        "name": "namespace",
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "Disaster Recovery & Chaos Engineering",
+  "uid": "dr-chaos-dashboard",
+  "version": 1
+}

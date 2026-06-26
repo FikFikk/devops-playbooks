@@ -1,0 +1,62 @@
+# =============================================================================
+# Velero Backup Storage Location — Cross-Region
+# =============================================================================
+
+---
+# Primary BSL
+apiVersion: velero.io/v1
+kind: BackupStorageLocation
+metadata:
+  name: primary
+  namespace: velero
+spec:
+  provider: aws
+  objectStorage:
+    bucket: myapp-velero-backup-primary
+    prefix: backups
+  config:
+    region: ap-southeast-1
+    s3ForcePathStyle: "false"
+  default: true
+  accessMode: ReadWrite
+
+---
+# DR BSL (read-only dari primary, read-write saat failover)
+apiVersion: velero.io/v1
+kind: BackupStorageLocation
+metadata:
+  name: dr-region
+  namespace: velero
+spec:
+  provider: aws
+  objectStorage:
+    bucket: myapp-velero-backup-dr
+    prefix: backups
+  config:
+    region: ap-northeast-1
+    s3ForcePathStyle: "false"
+  accessMode: ReadOnly  # Ubah ke ReadWrite saat failover
+
+---
+# Volume Snapshot Location — Primary
+apiVersion: velero.io/v1
+kind: VolumeSnapshotLocation
+metadata:
+  name: primary
+  namespace: velero
+spec:
+  provider: aws
+  config:
+    region: ap-southeast-1
+
+---
+# Volume Snapshot Location — DR
+apiVersion: velero.io/v1
+kind: VolumeSnapshotLocation
+metadata:
+  name: dr-region
+  namespace: velero
+spec:
+  provider: aws
+  config:
+    region: ap-northeast-1

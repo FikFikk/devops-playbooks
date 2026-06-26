@@ -1,0 +1,248 @@
+# =============================================================================
+# Prometheus Alerting Rules — Disaster Recovery
+# Alert rules untuk monitoring DR readiness dan backup health
+# =============================================================================
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: dr-alerts
+  namespace: monitoring
+  labels:
+    release: prometheus
+    role: alert-rules
+spec:
+  groups:
+    # =========================================================================
+    # Backup Health Alerts
+    # =========================================================================
+    - name: backup-health
+      interval: 5m
+      rules:
+        - alert: VeleroBackupFailed
+          expr: |
+            increase(velero_backup_failure_total[1h]) > 0
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+            category: dr
+          annotations:
+            summary: "Velero backup gagal"
+            description: >
+              Backup Velero telah gagal dalam 1 jam terakhir.
+              Total failures: {{ $value }}.
+              Segera periksa logs velero: kubectl logs -n velero deploy/velero
+            runbook_url: "https://wiki.internal/runbooks/velero-backup-failed"
+
+        - alert: VeleroBackupMissing
+          expr: |
+            time() - velero_backup_last_successful_timestamp{schedule!=""} > 86400
+          for: 30m
+          labels:
+            severity: warning
+            team: platform
+            category: dr
+          annotations:
+            summary: "Backup terjadwal tidak berjalan > 24 jam"
+            description: >
+              Schedule '{{ $labels.schedule }}' tidak memiliki backup sukses
+              dalam 24 jam terakhir. RPO mungkin terlanggar.
+            runbook_url: "https://wiki.internal/runbooks/velero-backup-missing"
+
+        - alert: VeleroBackupPartialFailure
+          expr: |
+            increase(velero_backup_partial_failure_total[1h]) > 0
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+            category: dr
+          annotations:
+            summary: "Velero backup partially failed"
+            description: >
+              Backup Velero mengalami partial failure.
+              Beberapa resource mungkin tidak ter-backup.
+              Periksa: velero backup describe --details
+
+        - alert: RPOViolation
+          expr: |
+            (time() - velero_backup_last_successful_timestamp{schedule="daily-production-backup"}) > 7200
+          for: 15m
+          labels:
+            severity: critical
+            team: platform
+            category: dr
+          annotations:
+            summary: "RPO violation — backup terakhir > 2 jam lalu"
+            description: >
+              RPO target adalah 1 jam, tapi backup sukses terakhir
+              sudah {{ $value | humanizeDuration }} yang lalu.
+              Ini merupakan pelanggaran RPO. Segera investigasi.
+
+    # =========================================================================
+    # Replication Health Alerts
+    # =========================================================================
+    - name: replication-health
+      interval: 1m
+      rules:
+        - alert: DatabaseReplicationLagHigh
+          expr: |
+            aws_rds_replica_lag_seconds > 30
+          for: 5m
+          labels:
+            severity: warning
+            team: database
+            category: dr
+          annotations:
+            summary: "Database replication lag > 30 detik"
+            description: >
+              Replication lag ke DR database: {{ $value }}s.
+              Jika failover terjadi sekarang, data {{ $value }}s terakhir
+              bisa hilang.
+
+        - alert: DatabaseReplicationLagCritical
+          expr: |
+            aws_rds_replica_lag_seconds > 300
+          for: 5m
+          labels:
+            severity: critical
+            team: database
+            category: dr
+          annotations:
+            summary: "Database replication lag CRITICAL > 5 menit"
+            description: >
+              Replication lag ke DR database: {{ $value }}s.
+              RPO dalam bahaya. Investigasi segera.
+
+        - alert: DatabaseReplicationBroken
+          expr: |
+            aws_rds_replica_lag_seconds == -1 or absent(aws_rds_replica_lag_seconds)
+          for: 5m
+          labels:
+            severity: critical
+            team: database
+            category: dr
+          annotations:
+            summary: "Database replication BROKEN"
+            description: >
+              Replication ke DR database mungkin terputus.
+              Failover TIDAK AMAN dilakukan sebelum replication diperbaiki.
+
+    # =========================================================================
+    # DR Region Health
+    # =========================================================================
+    - name: dr-region-health
+      interval: 2m
+      rules:
+        - alert: DRClusterUnhealthy
+          expr: |
+            kube_node_status_condition{cluster="dr", condition="Ready", status="true"} == 0
+          for: 10m
+          labels:
+            severity: critical
+            team: platform
+            category: dr
+          annotations:
+            summary: "DR cluster node tidak Ready"
+            description: >
+              Node '{{ $labels.node }}' di DR cluster tidak Ready.
+              DR readiness terganggu.
+
+        - alert: DRClusterNodeCountLow
+          expr: |
+            count(kube_node_status_condition{cluster="dr", condition="Ready", status="true"}) < 2
+          for: 15m
+          labels:
+            severity: warning
+            team: platform
+            category: dr
+          annotations:
+            summary: "DR cluster hanya punya < 2 Ready nodes"
+            description: >
+              DR cluster membutuhkan minimal 2 Ready nodes untuk failover.
+              Saat ini hanya {{ $value }} nodes Ready.
+
+    # =========================================================================
+    # Chaos Experiment Monitoring
+    # =========================================================================
+    - name: chaos-experiment-alerts
+      interval: 30s
+      rules:
+        - alert: ChaosExperimentRunning
+          expr: |
+            litmuschaos_experiment_running_status == 1
+          for: 1m
+          labels:
+            severity: info
+            team: platform
+            category: chaos
+          annotations:
+            summary: "Chaos experiment sedang berjalan"
+            description: >
+              Experiment '{{ $labels.chaosresult_name }}' di namespace
+              '{{ $labels.chaosresult_namespace }}' sedang berjalan.
+
+        - alert: ChaosExperimentFailed
+          expr: |
+            litmuschaos_experiment_verdict{verdict="Fail"} == 1
+          for: 1m
+          labels:
+            severity: warning
+            team: platform
+            category: chaos
+          annotations:
+            summary: "Chaos experiment GAGAL (sistem tidak resilient)"
+            description: >
+              Experiment '{{ $labels.chaosresult_name }}' GAGAL —
+              sistem tidak memenuhi steady-state hypothesis.
+              Ini menunjukkan kelemahan resilience yang harus diperbaiki.
+
+        - alert: ChaosExperimentAborted
+          expr: |
+            litmuschaos_experiment_verdict{verdict="Stopped"} == 1
+          for: 1m
+          labels:
+            severity: warning
+            team: platform
+            category: chaos
+          annotations:
+            summary: "Chaos experiment di-ABORT"
+            description: >
+              Experiment '{{ $labels.chaosresult_name }}' di-abort.
+              Periksa apakah abort criteria tercapai.
+
+    # =========================================================================
+    # Failover Health
+    # =========================================================================
+    - name: failover-health
+      interval: 1m
+      rules:
+        - alert: HealthCheckDown
+          expr: |
+            aws_route53_health_check_status == 0
+          for: 3m
+          labels:
+            severity: critical
+            team: platform
+            category: dr
+          annotations:
+            summary: "Route 53 health check DOWN"
+            description: >
+              Health check '{{ $labels.health_check_id }}' menunjukkan DOWN.
+              Automatic failover mungkin sudah ter-trigger.
+              Verifikasi: aws route53 get-health-check-status
+
+        - alert: CrossRegionLatencyHigh
+          expr: |
+            histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{route="cross-region"}[5m])) by (le)) > 1.0
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+            category: dr
+          annotations:
+            summary: "Cross-region latency tinggi (P95 > 1s)"
+            description: >
+              Latency antara primary dan DR region P95: {{ $value }}s.
+              Ini bisa memperlambat replication dan meningkatkan RPO.
