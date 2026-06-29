@@ -1,0 +1,88 @@
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: frontend-vpa
+  namespace: production
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: frontend
+  updatePolicy:
+    updateMode: "Auto"  # Auto apply recommendations dan restart pods
+    # Atau "Off" untuk recommendation-only (no auto-restart)
+    # Atau "Initial" untuk apply hanya pada pod creation
+  resourcePolicy:
+    containerPolicies:
+    - containerName: '*'  # Apply ke semua containers
+      minAllowed:
+        cpu: 50m
+        memory: 128Mi
+      maxAllowed:
+        cpu: 2
+        memory: 4Gi
+      controlledResources:
+      - cpu
+      - memory
+      # Mode untuk recommendations
+      mode: Auto
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: api-vpa
+  namespace: production
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-server
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+    - containerName: api
+      minAllowed:
+        cpu: 100m
+        memory: 256Mi
+      maxAllowed:
+        cpu: 4
+        memory: 8Gi
+      controlledResources:
+      - cpu
+      - memory
+    - containerName: sidecar-proxy
+      minAllowed:
+        cpu: 10m
+        memory: 64Mi
+      maxAllowed:
+        cpu: 500m
+        memory: 512Mi
+      controlledResources:
+      - cpu
+      - memory
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: ml-training-vpa
+  namespace: ml-training
+spec:
+  targetRef:
+    apiVersion: batch/v1
+    kind: Job
+    name: model-training
+  updatePolicy:
+    updateMode: "Initial"  # Apply hanya pada job baru
+  resourcePolicy:
+    containerPolicies:
+    - containerName: trainer
+      minAllowed:
+        cpu: 2
+        memory: 8Gi
+      maxAllowed:
+        cpu: 16
+        memory: 64Gi
+      controlledResources:
+      - cpu
+      - memory

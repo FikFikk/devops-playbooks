@@ -1,0 +1,292 @@
+# OpenCost Helm Values
+# Referensi: https://github.com/opencost/opencost-helm-chart
+
+opencost:
+  exporter:
+    # Default pricing (gunakan cloud provider API atau custom)
+    defaultClusterId: "primary-cluster"
+    
+    # Cloud provider pricing integration
+    cloudProviderApiKey: ""  # Kosongkan, gunakan IAM role/service account
+    
+    # AWS Configuration
+    aws:
+      # Gunakan IRSA (IAM Roles for Service Accounts)
+      # ServiceAccount akan di-annotate dengan role ARN
+      access_key_id: ""
+      secret_access_key: ""
+      # CUR S3 bucket (dari Terraform output)
+      athenaProjectID: ""
+      athenaBucketName: ""  # Format: s3://opencost-cur-<account-id>
+      athenaRegion: "us-east-1"
+      athenaDatabase: "athenacurcfn_opencost_billing_export"
+      athenaTable: "opencost_billing_export"
+    
+    # GCP Configuration  
+    gcp:
+      # Gunakan Workload Identity atau service account key
+      secretName: "gcp-billing"  # Kubernetes secret
+      key: "service-account-key"
+      # BigQuery billing export
+      project: ""  # GCP project ID
+      billingDataDataset: "opencost_billing_export"
+      
+    # Azure Configuration
+    azure:
+      secretName: "azure-billing"
+      # Azure credentials dari secret
+      subscriptionID: ""
+      # Storage account untuk cost export
+      storageAccount: ""
+      containerName: "billing-exports"
+      
+    # Custom pricing untuk on-premise / bare-metal
+    customPricing:
+      enabled: false
+      # $/core/hour
+      cpu: "0.031"
+      # $/GB/hour  
+      memory: "0.004"
+      # $/GB/hour
+      storage: "0.00005"
+      # Per storage class
+      storageClass:
+        fast-ssd: "0.0002"
+        standard: "0.00005"
+        cheap-hdd: "0.00002"
+      # $/GB egress
+      networkEgress: "0.12"
+      # $/hour per LB
+      loadBalancer: "0.025"
+    
+    # Resources
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    
+    # Persistence untuk local cost data
+    persistence:
+      enabled: true
+      storageClass: "gp3"  # AWS gp3, atau standard untuk GCP/Azure
+      size: 10Gi
+      
+    # Retention
+    env:
+      # Berapa lama simpan cost data local
+      - name: RETENTION_DAYS
+        value: "15"
+      # Log level
+      - name: LOG_LEVEL
+        value: "info"
+      # Emit cost metrics
+      - name: EMIT_COST_METRICS
+        value: "true"
+      # Emit namespace annotations as labels
+      - name: EMIT_NAMESPACE_ANNOTATIONS
+        value: "true"
+      # Emit pod annotations as labels
+      - name: EMIT_POD_ANNOTATIONS
+        value: "true"
+      # Refresh pricing data interval
+      - name: PRICING_REFRESH_HOURS
+        value: "24"
+      # Cluster info configuration
+      - name: CLUSTER_INFO_FILE_ENABLED
+        value: "true"
+      - name: CLOUD_COST_ENABLED
+        value: "true"
+      - name: CLOUD_COST_MONTH_TO_DATE_INTERVAL
+        value: "6"  # Check cloud cost setiap 6 jam
+      - name: CLOUD_COST_REFRESH_RATE_HOURS
+        value: "6"
+  
+  # Prometheus integration
+  prometheus:
+    external:
+      enabled: true
+      url: "http://prometheus-server.monitoring.svc.cluster.local:9090"
+    internal:
+      enabled: false
+      
+  # ServiceMonitor untuk Prometheus Operator
+  serviceMonitor:
+    enabled: true
+    namespace: opencost-system
+    additionalLabels:
+      release: prometheus
+    interval: 60s
+    scrapeTimeout: 30s
+    
+  # UI (optional, bisa pakai Grafana sebagai gantinya)
+  ui:
+    enabled: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+    ingress:
+      enabled: true
+      ingressClassName: "nginx"
+      annotations:
+        cert-manager.io/cluster-issuer: "letsencrypt-prod"
+        nginx.ingress.kubernetes.io/auth-type: "basic"
+        nginx.ingress.kubernetes.io/auth-secret: "opencost-basic-auth"
+        nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
+      hosts:
+        - host: opencost.example.com
+          paths:
+            - path: /
+              pathType: Prefix
+      tls:
+        - secretName: opencost-tls
+          hosts:
+            - opencost.example.com
+
+# ServiceAccount configuration
+serviceAccount:
+  create: true
+  name: opencost
+  annotations:
+    # AWS IRSA
+    # eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/opencost-billing-access
+    
+    # GCP Workload Identity
+    # iam.gke.io/gcp-service-account: opencost-billing-reader@PROJECT_ID.iam.gserviceaccount.com
+    
+    # Azure Workload Identity
+    # azure.workload.identity/client-id: CLIENT_ID
+
+# Pod labels untuk cost allocation
+podLabels:
+  team: platform
+  cost-center: infrastructure
+  environment: production
+  component: finops
+
+# Pod annotations
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9003"
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity - preferensi jalan di node murah
+affinity:
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        preference:
+          matchExpressions:
+            - key: node.kubernetes.io/instance-type
+              operator: In
+              values:
+                - t3.medium
+                - e2-medium
+                - Standard_B2s
+
+# Priority class
+priorityClassName: "system-cluster-critical"
+
+# Security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  fsGroup: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+# Liveness & readiness probes
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 9003
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: 9003
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Network policy (optional)
+networkPolicy:
+  enabled: true
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: 9003
+  egress:
+    # Allow DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow Prometheus
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9090
+    # Allow cloud provider APIs
+    - to:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 443
+
+# Extra manifests (ConfigMap untuk cluster info)
+extraManifests:
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: cluster-info
+      namespace: opencost-system
+    data:
+      cluster-info.json: |
+        {
+          "id": "primary-cluster",
+          "name": "Production Cluster",
+          "provider": "aws",
+          "region": "us-east-1",
+          "provisioner": "eks",
+          "account": "123456789012"
+        }

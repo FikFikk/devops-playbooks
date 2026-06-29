@@ -1,0 +1,191 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-namespace-labels
+  annotations:
+    policies.kyverno.io/title: Require Namespace Cost Labels
+    policies.kyverno.io/category: FinOps
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Namespace
+    policies.kyverno.io/description: >-
+      Enforce required labels untuk cost allocation pada semua namespaces.
+      Labels ini diperlukan untuk OpenCost tracking dan chargeback.
+spec:
+  validationFailureAction: enforce
+  background: true
+  rules:
+  - name: require-team-label
+    match:
+      any:
+      - resources:
+          kinds:
+          - Namespace
+    exclude:
+      any:
+      - resources:
+          namespaces:
+          - kube-system
+          - kube-public
+          - kube-node-lease
+          - opencost-system
+          - monitoring
+          - ingress-nginx
+    validate:
+      message: "Namespace harus memiliki label 'team' untuk cost allocation"
+      pattern:
+        metadata:
+          labels:
+            team: "?*"
+  
+  - name: require-cost-center-label
+    match:
+      any:
+      - resources:
+          kinds:
+          - Namespace
+    exclude:
+      any:
+      - resources:
+          namespaces:
+          - kube-system
+          - kube-public
+          - kube-node-lease
+          - opencost-system
+          - monitoring
+          - ingress-nginx
+    validate:
+      message: "Namespace harus memiliki label 'cost-center' untuk finance tracking"
+      pattern:
+        metadata:
+          labels:
+            cost-center: "?*"
+  
+  - name: require-environment-label
+    match:
+      any:
+      - resources:
+          kinds:
+          - Namespace
+    exclude:
+      any:
+      - resources:
+          namespaces:
+          - kube-system
+          - kube-public
+          - kube-node-lease
+          - opencost-system
+          - monitoring
+          - ingress-nginx
+    validate:
+      message: "Namespace harus memiliki label 'environment' (production/staging/development)"
+      pattern:
+        metadata:
+          labels:
+            environment: "production|staging|development|test"
+
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: propagate-namespace-labels-to-pods
+  annotations:
+    policies.kyverno.io/title: Propagate Namespace Labels to Pods
+    policies.kyverno.io/category: FinOps
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Otomatis copy namespace labels (team, cost-center, environment) ke pods
+      untuk granular cost tracking.
+spec:
+  background: false
+  rules:
+  - name: add-namespace-labels
+    match:
+      any:
+      - resources:
+          kinds:
+          - Pod
+    mutate:
+      patchStrategicMerge:
+        metadata:
+          labels:
+            +(team): "{{request.namespace.metadata.labels.team}}"
+            +(cost-center): "{{request.namespace.metadata.labels.cost-center}}"
+            +(environment): "{{request.namespace.metadata.labels.environment}}"
+            +(app): "{{request.namespace.metadata.labels.app || 'unknown'}}"
+
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-pod-resource-limits
+  annotations:
+    policies.kyverno.io/title: Require Resource Limits
+    policies.kyverno.io/category: FinOps
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Enforce resource requests dan limits pada semua containers untuk
+      accurate cost allocation dan prevent resource hogging.
+spec:
+  validationFailureAction: enforce
+  background: true
+  rules:
+  - name: require-requests-and-limits
+    match:
+      any:
+      - resources:
+          kinds:
+          - Pod
+    exclude:
+      any:
+      - resources:
+          namespaces:
+          - kube-system
+          - kube-public
+    validate:
+      message: >-
+        Semua containers harus specify CPU dan memory requests/limits
+        untuk cost visibility dan resource management.
+      pattern:
+        spec:
+          containers:
+          - resources:
+              requests:
+                memory: "?*"
+                cpu: "?*"
+              limits:
+                memory: "?*"
+                cpu: "?*"
+
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-namespace-budget
+  annotations:
+    policies.kyverno.io/title: Validate Budget Label Format
+    policies.kyverno.io/category: FinOps
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Namespace
+    policies.kyverno.io/description: >-
+      Validate bahwa namespace budget label berisi numeric value.
+spec:
+  validationFailureAction: enforce
+  background: true
+  rules:
+  - name: validate-budget-format
+    match:
+      any:
+      - resources:
+          kinds:
+          - Namespace
+          selector:
+            matchLabels:
+              budget: "?*"
+    validate:
+      message: "Label 'budget' harus berisi numeric value (monthly USD)"
+      pattern:
+        metadata:
+          labels:
+            budget: "^[0-9]+$"

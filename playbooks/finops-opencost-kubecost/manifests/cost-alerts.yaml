@@ -1,0 +1,396 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: opencost-alerts
+  namespace: opencost-system
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+  - name: finops-cost-alerts
+    interval: 5m
+    rules:
+    # ============================================
+    # Budget Alerts
+    # ============================================
+    - alert: NamespaceBudgetExceeded
+      expr: |
+        sum by (namespace) (
+          rate(container_cpu_allocation{namespace!=""}[1h]) * on (node) group_left 
+          node_cpu_hourly_cost * 730
+          +
+          sum by (namespace) (container_memory_allocation_bytes{namespace!=""}) / 1e9 * on (node) group_left 
+          node_ram_hourly_cost * 730
+        ) > 
+        sum by (namespace) (
+          label_replace(
+            kube_namespace_labels{label_budget!=""},
+            "budget", "$1", "label_budget", "(.*)"
+          )
+        )
+      for: 2h
+      labels:
+        severity: warning
+        team: finops
+      annotations:
+        summary: "Namespace {{ $labels.namespace }} exceeded monthly budget"
+        description: |
+          Current projected monthly cost: ${{ printf "%.2f" $value }}
+          This exceeds the configured budget.
+          
+          Action: Review resource allocation dan optimize workloads.
+    
+    - alert: NamespaceBudgetCritical
+      expr: |
+        sum by (namespace) (
+          rate(container_cpu_allocation{namespace!=""}[1h]) * on (node) group_left 
+          node_cpu_hourly_cost * 730
+          +
+          sum by (namespace) (container_memory_allocation_bytes{namespace!=""}) / 1e9 * on (node) group_left 
+          node_ram_hourly_cost * 730
+        ) > 
+        1.2 * sum by (namespace) (
+          label_replace(
+            kube_namespace_labels{label_budget!=""},
+            "budget", "$1", "label_budget", "(.*)"
+          )
+        )
+      for: 1h
+      labels:
+        severity: critical
+        team: finops
+      annotations:
+        summary: "Namespace {{ $labels.namespace }} 20% over budget!"
+        description: |
+          Current projected cost is 20% above monthly budget.
+          Immediate action required.
+          
+          Contact namespace owner: {{ $labels.label_team }}
+    
+    # ============================================
+    # Cost Spike Detection
+    # ============================================
+    - alert: NamespaceCostSpike
+      expr: |
+        (
+          sum by (namespace) (rate(container_cpu_allocation[1h]) * on (node) group_left node_cpu_hourly_cost)
+          /
+          avg_over_time(
+            (sum by (namespace) (rate(container_cpu_allocation[1h]) * on (node) group_left node_cpu_hourly_cost))[7d:1h]
+          )
+        ) > 1.5
+      for: 30m
+      labels:
+        severity: warning
+        team: finops
+      annotations:
+        summary: "Cost spike detected in {{ $labels.namespace }}"
+        description: |
+          Current hourly cost is {{ printf "%.0f" (sub $value 1 | mul 100) }}% higher than 7-day average.
+          
+          Possible causes:
+          - New deployment with high resource requests
+          - Runaway pods/jobs
+          - Traffic spike
+          
+          Investigate immediately.
+    
+    - alert: ClusterWideCostSpike
+      expr: |
+        sum(node_total_hourly_cost) > 1.3 * avg_over_time(sum(node_total_hourly_cost)[7d:1h])
+      for: 1h
+      labels:
+        severity: critical
+        team: finops
+      annotations:
+        summary: "Cluster-wide cost spike detected"
+        description: |
+          Total cluster cost is {{ printf "%.0f" (sub $value 1 | mul 100) }}% above 7-day average.
+          
+          Current hourly rate: ${{ printf "%.2f" $value }}
+          
+          Check for:
+          - Cluster autoscaler activity
+          - Large batch jobs
+          - DDoS or traffic anomaly
+    
+    # ============================================
+    # Idle Resource Alerts
+    # ============================================
+    - alert: HighIdleResourceCost
+      expr: |
+        sum by (namespace) (
+          (container_cpu_allocation - rate(container_cpu_usage_seconds_total[5m])) 
+          * on (node) group_left node_cpu_hourly_cost
+          +
+          (container_memory_allocation_bytes - container_memory_working_set_bytes) / 1e9
+          * on (node) group_left node_ram_hourly_cost
+        ) > 10
+      for: 24h
+      labels:
+        severity: info
+        team: finops
+      annotations:
+        summary: "High idle cost in {{ $labels.namespace }}"
+        description: |
+          Idle resource cost: ${{ printf "%.2f" $value }}/hour
+          Projected monthly waste: ${{ printf "%.2f" (mul $value 730) }}
+          
+          Action: Right-size pod requests atau enable VPA.
+    
+    - alert: IdleNamespace
+      expr: |
+        sum by (namespace) (rate(container_cpu_usage_seconds_total{namespace!~"kube-.*"}[1h])) < 0.05
+        and
+        sum by (namespace) (container_cpu_allocation{namespace!~"kube-.*"}) > 0.5
+      for: 48h
+      labels:
+        severity: info
+        team: finops
+      annotations:
+        summary: "Namespace {{ $labels.namespace }} appears idle"
+        description: |
+          CPU usage <5% for 48 hours but still allocating resources.
+          
+          Monthly cost: ${{ printf "%.2f" $value }}
+          
+          Consider:
+          - Scale to zero jika dev/test environment
+          - Delete jika tidak dipakai
+    
+    # ============================================
+    # Efficiency Alerts
+    # ============================================
+    - alert: LowCPUEfficiency
+      expr: |
+        100 * (
+          sum by (namespace) (rate(container_cpu_usage_seconds_total[5m]))
+          /
+          sum by (namespace) (container_cpu_allocation)
+        ) < 20
+      for: 6h
+      labels:
+        severity: info
+        team: finops
+      annotations:
+        summary: "Low CPU efficiency in {{ $labels.namespace }}"
+        description: |
+          CPU efficiency: {{ printf "%.1f" $value }}%
+          
+          Pods are over-provisioned. Reduce CPU requests atau enable VPA.
+          
+          Potential savings: ${{ printf "%.2f" $value }}/month
+    
+    - alert: LowMemoryEfficiency
+      expr: |
+        100 * (
+          sum by (namespace) (container_memory_working_set_bytes)
+          /
+          sum by (namespace) (container_memory_allocation_bytes)
+        ) < 30
+      for: 6h
+      labels:
+        severity: info
+        team: finops
+      annotations:
+        summary: "Low memory efficiency in {{ $labels.namespace }}"
+        description: |
+          Memory efficiency: {{ printf "%.1f" $value }}%
+          
+          Pods are over-provisioned. Reduce memory requests atau enable VPA.
+    
+    # ============================================
+    # Expensive Resource Alerts
+    # ============================================
+    - alert: ExpensivePod
+      expr: |
+        sum by (namespace, pod) (
+          rate(container_cpu_allocation[1h]) * on (node) group_left node_cpu_hourly_cost * 730
+          +
+          container_memory_allocation_bytes / 1e9 * on (node) group_left node_ram_hourly_cost * 730
+        ) > 500
+      for: 24h
+      labels:
+        severity: warning
+        team: finops
+      annotations:
+        summary: "Expensive pod {{ $labels.pod }} in {{ $labels.namespace }}"
+        description: |
+          Projected monthly cost: ${{ printf "%.2f" $value }}
+          
+          Review:
+          - Apakah resource allocation sesuai kebutuhan?
+          - Bisa pakai node lebih murah (spot/preemptible)?
+          - Optimasi kode untuk kurangi resource usage?
+    
+    - alert: ExpensiveStorageClass
+      expr: |
+        sum by (namespace, persistentvolumeclaim, storageclass) (
+          kube_persistentvolumeclaim_info * on (persistentvolumeclaim, namespace) group_left(storageclass)
+          kube_persistentvolumeclaim_resource_requests_storage_bytes / 1e9
+        ) * 0.0002 * 730 > 100
+      for: 7d
+      labels:
+        severity: info
+        team: finops
+      annotations:
+        summary: "Expensive PVC {{ $labels.persistentvolumeclaim }} in {{ $labels.namespace }}"
+        description: |
+          Storage cost: ${{ printf "%.2f" $value }}/month
+          Storage class: {{ $labels.storageclass }}
+          
+          Consider:
+          - Apakah storage class terlalu mahal untuk use case ini?
+          - Bisa pakai cheaper storage tier?
+          - Setup lifecycle policy untuk archive old data?
+    
+    # ============================================
+    # Data Availability Alerts
+    # ============================================
+    - alert: OpenCostDown
+      expr: up{job="opencost"} == 0
+      for: 5m
+      labels:
+        severity: critical
+        team: platform
+      annotations:
+        summary: "OpenCost exporter is down"
+        description: |
+          OpenCost pod tidak responding.
+          Cost metrics akan hilang.
+          
+          Check:
+          kubectl logs -n opencost-system -l app=opencost
+    
+    - alert: MissingCostData
+      expr: |
+        absent(node_cpu_hourly_cost) or absent(node_ram_hourly_cost)
+      for: 15m
+      labels:
+        severity: warning
+        team: platform
+      annotations:
+        summary: "Missing cost metrics from OpenCost"
+        description: |
+          node_cpu_hourly_cost atau node_ram_hourly_cost metrics hilang.
+          
+          Possible causes:
+          - Cloud provider pricing API down
+          - Misconfigured cloud credentials
+          - OpenCost pod restarting
+          
+          Check OpenCost logs.
+    
+    - alert: StaleCloudBillingData
+      expr: |
+        (time() - opencost_cloud_billing_last_update_timestamp) > 172800
+      for: 1h
+      labels:
+        severity: warning
+        team: finops
+      annotations:
+        summary: "Cloud billing data is stale"
+        description: |
+          Last update: {{ $value | humanizeDuration }} ago
+          
+          Cloud billing export mungkin delayed atau misconfigured.
+          
+          Verify:
+          - AWS CUR export schedule
+          - GCP BigQuery billing export
+          - Azure Cost Management export
+    
+    # ============================================
+    # Anomaly Detection (Simple)
+    # ============================================
+    - alert: UnexpectedNodeAddition
+      expr: |
+        sum(kube_node_info) > 1.1 * avg_over_time(sum(kube_node_info)[7d:1h])
+      for: 15m
+      labels:
+        severity: info
+        team: finops
+      annotations:
+        summary: "Unexpected increase in node count"
+        description: |
+          Current node count: {{ $value }}
+          
+          Cluster autoscaler added nodes.
+          
+          Verify:
+          - Apakah ini expected (traffic spike, batch job)?
+          - Atau autoscaler misconfigured?
+    
+    - alert: UnusualNamespaceCostDistribution
+      expr: |
+        stddev by (cluster) (
+          sum by (namespace) (
+            rate(container_cpu_allocation[1h]) * on (node) group_left node_cpu_hourly_cost
+          )
+        ) > 50
+      for: 2h
+      labels:
+        severity: info
+        team: finops
+      annotations:
+        summary: "Unusual cost distribution across namespaces"
+        description: |
+          High variance in namespace costs detected.
+          One namespace mungkin consuming disproportionate resources.
+          
+          Review namespace cost dashboard untuk identify outlier.
+
+  - name: finops-slo-alerts
+    interval: 5m
+    rules:
+    # ============================================
+    # FinOps SLO Tracking
+    # ============================================
+    - alert: CostVisibilitySLOViolation
+      expr: |
+        100 * (
+          count(kube_namespace_labels{label_team!=""})
+          /
+          count(kube_namespace_labels)
+        ) < 95
+      for: 24h
+      labels:
+        severity: warning
+        team: finops
+      annotations:
+        summary: "Cost visibility SLO violated"
+        description: |
+          Only {{ printf "%.1f" $value }}% namespaces have team labels.
+          Target: 95%+
+          
+          Namespaces without labels tidak bisa di-attribute ke team.
+          
+          Action: Enforce label policy via admission webhook.
+    
+    - alert: IdleResourceSLOViolation
+      expr: |
+        100 * (
+          sum(
+            (container_cpu_allocation - rate(container_cpu_usage_seconds_total[5m]))
+            * on (node) group_left node_cpu_hourly_cost
+          )
+          /
+          sum(container_cpu_allocation * on (node) group_left node_cpu_hourly_cost)
+        ) > 30
+      for: 48h
+      labels:
+        severity: warning
+        team: finops
+      annotations:
+        summary: "Idle resource SLO violated"
+        description: |
+          Idle resource percentage: {{ printf "%.1f" $value }}%
+          Target: <30%
+          
+          Cluster efficiency perlu ditingkatkan.
+          
+          Actions:
+          - Enable VPA untuk auto right-sizing
+          - Review over-provisioned namespaces
+          - Educate teams tentang proper resource requests

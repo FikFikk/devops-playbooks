@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    # Required labels untuk cost allocation
+    team: platform
+    cost-center: "ENG-001"
+    environment: production
+    app: ecommerce
+    budget: "5000"  # Monthly budget dalam USD
+  annotations:
+    # Optional annotations
+    description: "Production workloads untuk ecommerce platform"
+    owner: "platform-team@company.com"
+    slack-channel: "#platform-alerts"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: staging
+  labels:
+    team: platform
+    cost-center: "ENG-001"
+    environment: staging
+    app: ecommerce
+    budget: "1000"
+  annotations:
+    description: "Staging environment untuk testing"
+    owner: "platform-team@company.com"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ml-training
+  labels:
+    team: data-science
+    cost-center: "DS-001"
+    environment: production
+    app: ml-pipeline
+    budget: "12000"  # Higher budget untuk GPU workloads
+  annotations:
+    description: "ML model training workloads"
+    owner: "ml-team@company.com"
+    gpu-enabled: "true"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: development
+  labels:
+    team: engineering
+    cost-center: "ENG-002"
+    environment: development
+    app: sandbox
+    budget: "500"
+  annotations:
+    description: "Developer sandbox environment"
+    owner: "eng-team@company.com"
+    auto-shutdown: "true"  # Auto shutdown di malam hari
