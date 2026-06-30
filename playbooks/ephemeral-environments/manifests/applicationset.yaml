@@ -1,0 +1,52 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: ephemeral-pr-envs
+  namespace: argocd
+spec:
+  generators:
+  - pullRequest:
+      github:
+        owner: your-org
+        repo: your-app
+        tokenSecretRef:
+          secretName: github-token
+          key: token
+        labels:
+        - preview
+      requeueAfterSeconds: 30
+  
+  template:
+    metadata:
+      name: 'pr-{{number}}'
+      annotations:
+        pr-url: '{{url}}'
+        pr-author: '{{author}}'
+        created-at: '{{createdAt}}'
+    spec:
+      project: ephemeral
+      source:
+        repoURL: https://github.com/your-org/your-app
+        targetRevision: '{{head_sha}}'
+        path: kubernetes/overlays/preview
+        helm:
+          parameters:
+          - name: image.tag
+            value: 'pr-{{number}}'
+          - name: ingress.host
+            value: 'pr-{{number}}.preview.yourapp.com'
+          - name: pr.number
+            value: '{{number}}'
+          - name: pr.branch
+            value: '{{branch}}'
+      
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: 'pr-{{number}}'
+      
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+        - CreateNamespace=true
