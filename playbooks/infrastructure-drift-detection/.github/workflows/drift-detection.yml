@@ -1,0 +1,250 @@
+name: Infrastructure Drift Detection
+
+on:
+  schedule:
+    # Setiap hari jam 02:00 UTC (09:00 WIB)
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to check'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+          - development
+
+permissions:
+  id-token: write
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  detect-drift:
+    name: Check Drift - ${{ matrix.environment }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment: 
+          - production
+          - staging
+      fail-fast: false
+      max-parallel: 2
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DRIFT_DETECTOR_ROLE_ARN }}
+          aws-region: ap-southeast-1
+          role-session-name: GitHubActions-DriftDetection
+      
+      - name: Verify AWS Identity
+        run: |
+          echo "Assumed role:"
+          aws sts get-caller-identity
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.0
+          terraform_wrapper: false
+      
+      - name: Cache Terraform Plugins
+        uses: actions/cache@v4
+        with:
+          path: |
+            .terraform
+            .terraform.lock.hcl
+          key: terraform-${{ matrix.environment }}-${{ hashFiles('**/*.tf') }}
+          restore-keys: |
+            terraform-${{ matrix.environment }}-
+      
+      - name: Run Drift Detection
+        id: drift
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          OUTPUT_DIR: ./drift-reports
+        run: |
+          chmod +x scripts/detect-drift.sh
+          ./scripts/detect-drift.sh ${{ matrix.environment }} terraform/${{ matrix.environment }}
+        continue-on-error: true
+      
+      - name: Check Exit Code
+        id: check
+        run: |
+          if [ "${{ steps.drift.outcome }}" == "success" ]; then
+            echo "drift_detected=false" >> $GITHUB_OUTPUT
+          else
+            echo "drift_detected=true" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Upload Drift Report
+        if: steps.check.outputs.drift_detected == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-report-${{ matrix.environment }}-${{ github.run_number }}
+          path: drift-reports/
+          retention-days: 30
+      
+      - name: Create GitHub Issue on Drift
+        if: steps.check.outputs.drift_detected == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            
+            // Read drift report
+            const reportDir = './drift-reports';
+            const files = fs.readdirSync(reportDir);
+            const summaryFile = files.find(f => f.includes('summary'));
+            
+            let reportContent = 'Full report not available';
+            if (summaryFile) {
+              reportContent = fs.readFileSync(path.join(reportDir, summaryFile), 'utf8');
+            }
+            
+            // Truncate untuk GitHub issue (max length)
+            if (reportContent.length > 60000) {
+              reportContent = reportContent.substring(0, 60000) + '\n\n... (truncated)';
+            }
+            
+            const environment = '${{ matrix.environment }}';
+            const timestamp = new Date().toISOString();
+            
+            // Check apakah sudah ada open issue untuk env ini
+            const existingIssues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: `drift-${environment}`
+            });
+            
+            const issueBody = `## 🚨 Infrastructure Drift Detected
+            
+            **Environment:** \`${environment}\`  
+            **Detected:** ${timestamp}  
+            **Workflow Run:** [#${{ github.run_number }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            
+            ### Drift Report
+            
+            \`\`\`
+            ${reportContent}
+            \`\`\`
+            
+            ### Recommended Actions
+            
+            1. **Review the drift report** to understand what changed
+            2. **Determine if changes are intentional:**
+               - If yes: Update Terraform code to match current state
+               - If no: Run \`terraform apply\` to remediate
+            3. **Investigate root cause:**
+               - Who made the change?
+               - Why wasn't it done through IaC?
+               - How to prevent similar drift?
+            4. **Close this issue** after remediation
+            
+            ### Quick Commands
+            
+            \`\`\`bash
+            # Review current drift
+            cd terraform/${environment}
+            terraform plan -refresh-only
+            
+            # Remediate (revert to IaC state)
+            terraform apply
+            
+            # Or import changes to Terraform
+            terraform import <resource_type>.<resource_name> <resource_id>
+            \`\`\`
+            
+            ---
+            
+            **Priority:** High  
+            **SLA:** Respond within 4 hours for production, 24 hours for staging  
+            
+            _Auto-generated by [drift-detection workflow](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})_`;
+            
+            if (existingIssues.data.length > 0) {
+              // Update existing issue
+              const issue = existingIssues.data[0];
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `## New Drift Detected\n\n${issueBody}`
+              });
+              console.log(`Updated existing issue #${issue.number}`);
+            } else {
+              // Create new issue
+              const newIssue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `🚨 Infrastructure Drift: ${environment}`,
+                body: issueBody,
+                labels: ['infrastructure', 'drift', `drift-${environment}`, 'priority:high']
+              });
+              console.log(`Created new issue #${newIssue.data.number}`);
+            }
+      
+      - name: Post Success Summary
+        if: steps.check.outputs.drift_detected == 'false'
+        run: |
+          echo "✅ No drift detected in ${{ matrix.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Last checked: $(date -Iseconds)" >> $GITHUB_STEP_SUMMARY
+      
+      - name: Post Drift Summary
+        if: steps.check.outputs.drift_detected == 'true'
+        run: |
+          echo "⚠️ Drift detected in ${{ matrix.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "See drift report artifact for details" >> $GITHUB_STEP_SUMMARY
+
+  notify-completion:
+    name: Notify Completion
+    runs-on: ubuntu-latest
+    needs: detect-drift
+    if: always()
+    
+    steps:
+      - name: Send Summary to Slack
+        if: env.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          STATUS="✅ All checks passed"
+          if [ "${{ needs.detect-drift.result }}" != "success" ]; then
+            STATUS="⚠️ Drift detected or checks failed"
+          fi
+          
+          curl -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"text\": \"Daily Drift Detection Complete\",
+              \"blocks\": [
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"*Daily Infrastructure Drift Check*\n$STATUS\"
+                  }
+                },
+                {
+                  \"type\": \"context\",
+                  \"elements\": [
+                    {
+                      \"type\": \"mrkdwn\",
+                      \"text\": \"<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|View workflow run>\"
+                    }
+                  ]
+                }
+              ]
+            }"
